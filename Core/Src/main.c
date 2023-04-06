@@ -8,7 +8,7 @@
  *	0x0001: Variable Mode : 8 bits
  *	0x0002: Variable Resolutions : 8 bits
  *
- *	Version 0.2
+ *	Version 0.0.3
  *	Watchdog timer in 400ms
  */
 
@@ -22,15 +22,21 @@
 
 #define EEPROM_ADDR 0b10100000
 #define ReadMask (uint32_t) 0x1F
-#define EndOfCounts 65454 //@274PSC: 250ms
+#define EndOfCounts250ms 65454 //@274PSC: 250ms
 #define CountsOfSelectAnim 0xFFFF //@274PSC:
 #define SizeOfSlotsArray 5
+#define Seconds(x) x*4 //Only valid for the Timer_Delay_250ms
 
 I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c2;
 TIM_HandleTypeDef htim4;
-
 IWDG_HandleTypeDef hiwdg;
+
+enum Sensors
+{
+	_BH1750,
+	_TSL2561
+}Sensor;
 
 enum ISR
 {
@@ -51,13 +57,12 @@ typedef enum Buttons
 typedef enum Mode
 {
 	Continuous,
-	One_shot,
+	Hold,
 	Plot,
+	Select_Sensor,
 	Reset_Sensor,
-	Save_Info,
-	See_Info,
-	Clean_Info,
 	Idle,
+	Select_Diode,
 }Modes;
 
 struct Errors
@@ -82,12 +87,9 @@ static void MX_I2C2_Init(void);
 static void MX_IWDG_Init(void);
 static void MX_TIM4_Init(void);
 void Continous_mode(void);
-void One_shot_mode(void);
+void Hold_mode(void);
 void Plot_mode(void);
 void Reset_sensor_mode(void);
-void Save_info_mode(void);
-void See_info(void);
-void Clean_info(void);
 void Flash_configs(void);
 void MenuGUI(void);
 void MCU_Reset_Subrutine(void);
@@ -99,6 +101,7 @@ void Print_Measure(float Measure, uint16_t x, uint16_t y);
 void wait_until_press(Buttons Button);
 void Timer_Delay_250ms(uint16_t Value);
 void Timer_Delay_at_274PSC(uint16_t Counts, uint16_t Overflows); //Period of 0.000003806
+void SensorRead(void);
 void Errors_init();
 void Configs_init(void);
 
@@ -107,7 +110,6 @@ float Measure;
 Rojo_BH1750 BH1750;
 uint32_t IDR_Read;
 uint8_t Config_buffer[2]; /*Solve here*/
-
 
 int main(void)
 {
@@ -124,12 +126,24 @@ int main(void)
   //Initial Prints
   //SSD1306_GotoXY(7, 5);
   //SSD1306_Puts("Loading", &Font_16x26, 1);
+
+  //Temporal asignation
+  Sensor = _BH1750;
+  //Temporal asignation
+
   SSD1306_GotoXY(3, 37);
-  SSD1306_Puts("Version 0.2", &Font_11x18, 1);
+  SSD1306_Puts("Version 0.3", &Font_11x18, 1);
   SSD1306_UpdateScreen();
   HAL_IWDG_Refresh(&hiwdg);
-  if(BH1750_Init(&BH1750, &hi2c2, Address_Low) != Rojo_OK)
-	  NoConnected_BH1750();
+  switch(Sensor)
+  {
+  	  case _BH1750:
+  		  if(BH1750_Init(&BH1750, &hi2c2, Address_Low) != Rojo_OK)
+  			  NoConnected_BH1750();
+	  break;
+	  case _TSL2561:
+	  break;
+  }
   //EEPROM Check & Configurations Read
   if(HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0x0, 1, &Configs.Factory_Values, 1, 100) != HAL_OK)
 	  Fatal_Error_EEPROM();
@@ -137,10 +151,10 @@ int main(void)
 	  Flash_configs(); //Start by the FLASH configurations
   else if(!Configs.Factory_Values)
   {
-	  if(HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0x1, 1, Config_buffer, 2/*Check here*/, 100) != HAL_OK)
+	  if(HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0x1, 1, Config_buffer, 2/*@TODO Change the neccesary buffer*/, 100) != HAL_OK)
 		  Fatal_Error_EEPROM();
 	  HAL_IWDG_Refresh(&hiwdg);
-	  /*Check here*/
+	  /*@TODO Check all the configurations*/
 	  Config_buffer[0] = Configs.Mode;
 	  Config_buffer[1] = Configs.Resolution;
   }
@@ -148,7 +162,7 @@ int main(void)
   HAL_IWDG_Refresh(&hiwdg);
   HAL_TIM_Base_Start(&htim4);
   ISR = None;
-  Timer_Delay_250ms(8); //2 seconds
+  Timer_Delay_250ms(Seconds(1.5f));
   //Final Clear
   SSD1306_Clear();
   SSD1306_UpdateScreen();
@@ -158,13 +172,13 @@ int main(void)
 	  switch(ISR)
 	  {
 	  	  case Menu:
-	  		  MenuGUI();
 	  		  ISR = None;
-	  		  Configs.Last_Mode = Idle;
+	  		  MenuGUI();
+	  		  //Configs.Last_Mode = Idle;
 	  	  break;
 	  	  case MCU_Reset:
-	  		  MCU_Reset_Subrutine();
 	  		  ISR = None;
+	  		  MCU_Reset_Subrutine();
 	  	  break;
 	  	  default:
 	  	  break;
@@ -172,21 +186,20 @@ int main(void)
 	  //Check & Run the mode
 	  switch(Configs.Mode)
 	  {
-	  	  case Continuous:
+	  	  case Continuous: //Basic Software mode
 	  		  Continous_mode();
 	  	  break;
-	  	  case One_shot:
-	  		  One_shot_mode();
+	  	  case Hold: //Basic Software mode
+	  		  Hold_mode();
 	  	  break;
-	  	  case Plot:
-	  	  break;
-	  	  case Reset_Sensor:
+	  	  case Reset_Sensor: //Basic Software mode
+	  		  Reset_sensor_mode();
 		  break;
-	  	  case Save_Info:
+	  	  case Plot: //Basic Software mode
 	  	  break;
-	  	  case See_Info:
+	  	  case Select_Sensor: //IR Software mode
 	  	  break;
-	  	  case Clean_Info:
+	  	  case Select_Diode: //IR Software mode
 	  	  break;
 	  	  case Idle:
 	  	  break;
@@ -195,6 +208,7 @@ int main(void)
   }
 }
 
+//Basic software modes
 void Continous_mode(void)
 {
 	HAL_IWDG_Refresh(&hiwdg);
@@ -207,31 +221,30 @@ void Continous_mode(void)
 		SSD1306_Puts("Continuous", &Font_7x10, 1);
 		SSD1306_UpdateScreen();
 	}
-	if(BH1750_Read(&BH1750, &Measure) != Rojo_OK)
-		NoConnected_BH1750();
+	SensorRead();
 	HAL_IWDG_Refresh(&hiwdg);
 	Print_Measure(Measure, 14, 30);
 	Configs.Last_Mode = Continuous;
 }
 
-void One_shot_mode(void)
+void Hold_mode(void)
 {
-	if(Configs.Last_Mode != One_shot)
+	if(Configs.Last_Mode != Hold)
 	{
 		SSD1306_Clear();
 		SSD1306_GotoXY(36, 8);
 		SSD1306_Puts("Valor", &Font_11x18, 1);
-		SSD1306_GotoXY(71, 53);
-		SSD1306_Puts("One Shot", &Font_7x10, 1);
+		SSD1306_GotoXY(43, 53);
+		SSD1306_Puts("Hold", &Font_7x10, 1);
 		SSD1306_UpdateScreen();
 	}
-	BH1750_Read(&BH1750, &Measure);
+	SensorRead();
 	Print_Measure(Measure, 14, 30);
 	wait_until_press(Ok);
-	Configs.Last_Mode = One_shot;
+	Configs.Last_Mode = Hold;
 }
 
-//Pending
+//@TODO all plot mode
 void Plot_mode(void)
 {
 	SSD1306_Clear();
@@ -245,60 +258,40 @@ void Plot_mode(void)
 	Configs.Mode = Continuous;
 }
 
-/*Check here*/
+//@TODO check error reset sensor mode
 void Reset_sensor_mode(void)
 {
+
 	SSD1306_Clear();
 	HAL_IWDG_Refresh(&hiwdg);
-	BH1750_ReCalibrate(&BH1750);
-	SSD1306_GotoXY(0, 0); //Coordinates
-	SSD1306_Puts("The sensor", &Font_11x18, 1);
-	SSD1306_GotoXY(0, 0);
+	switch(Sensor)
+	{
+		case _BH1750:
+			if(BH1750_ReCalibrate(&BH1750) != Rojo_OK)
+				Fatal_Error_BH1750();
+		break;
+		case _TSL2561:
+		break;
+	}
+	SSD1306_GotoXY(29, 5);
+	SSD1306_Puts("The sensor", &Font_7x10, 1);
+	SSD1306_GotoXY(8, 17);
 	SSD1306_Puts("has been reseted", &Font_7x10, 1);
+	SSD1306_GotoXY(36, 29);
+	SSD1306_Puts("Press OK", &Font_7x10, 1);
+	SSD1306_GotoXY(25, 41);
+	SSD1306_Puts("to continue", &Font_7x10, 1);
 	SSD1306_UpdateScreen();
 	wait_until_press(Ok);
+	Configs.Mode = Configs.Last_Mode;
+	Configs.Last_Mode = Reset_Sensor;
 }
 
-void Save_info_mode(void)
-{
-	bool Not_filled = true;
-	HAL_IWDG_Refresh(&hiwdg);
-	if(Configs.Last_Mode != Save_Info)
-	{
-		for(uint16_t i = 0; i < SizeOfSlotsArray; i++)
-		{
-			/*Prints*/
-			HAL_IWDG_Refresh(&hiwdg);
-		}
-		SSD1306_UpdateScreen();
-		do{
-			HAL_IWDG_Refresh(&hiwdg);
-			IDR_Read = (GPIOA -> IDR & ReadMask);
-			switch(IDR_Read)
-			{
-				case Up:
-				break;
-				case Down:
-				break;
-				case Right:
-				break;
-				case Left:
-				break;
-				case Ok:
-				break;
-			}
-		}while(Not_filled && ISR == None);
-	}
-
-	//Code
-
-	Configs.Last_Mode = Save_Info;
-}
-
-void See_info(void);
-
-void Clean_info(void);
-
+//@TODO All select sensor mode
+void Select_sensor_mode(void);
+//@TODO All select diode sensor mode
+void Select_diode_mode(void);
+//@TODO Flash configurations
 void Flash_configs(void)
 {
 
@@ -309,11 +302,14 @@ void MenuGUI(void)
 	bool Not_Filled = true;
 	int16_t Mode_Displayed = Continuous;
 	uint32_t Past_IDR_Read = 0xFF;
+	const uint16_t animation_counts = 4;
+
 	Timer_Delay_250ms(1);
 	SSD1306_Clear();
 	SSD1306_GotoXY(31, 5);
 	SSD1306_Puts("Mode", &Font_16x26, 1);
 	SSD1306_UpdateScreen();
+	Mode_Displayed = Configs.Last_Mode;
 	HAL_IWDG_Refresh(&hiwdg);
 	do
 	{
@@ -325,46 +321,34 @@ void MenuGUI(void)
 			switch(Mode_Displayed)
 			{
 				case Continuous:
-					SSD1306_GotoXY(8, 37);
-					SSD1306_Puts("          ", &Font_11x18, 1);
+					SSD1306_GotoXY(3, 37);
+					SSD1306_Puts("            ", &Font_11x18, 1);
 					SSD1306_GotoXY(8, 37);
 					SSD1306_Puts("Continuous", &Font_11x18, 1);
 				break;
-				case One_shot:
-					SSD1306_GotoXY(8, 37);
-					SSD1306_Puts("           ", &Font_11x18, 1);
-					SSD1306_GotoXY(19, 37);
-					SSD1306_Puts("One Shot", &Font_11x18, 1);
+				case Hold:
+					SSD1306_GotoXY(3, 37);
+					SSD1306_Puts("             ", &Font_11x18, 1);
+					SSD1306_GotoXY(41, 37);
+					SSD1306_Puts("Hold", &Font_11x18, 1);
 				break;
 				case Plot:
-					SSD1306_GotoXY(8, 37);
-					SSD1306_Puts("           ", &Font_11x18, 1);
+					SSD1306_GotoXY(3, 37);
+					SSD1306_Puts("             ", &Font_11x18, 1);
 					SSD1306_GotoXY(41, 37);
 					SSD1306_Puts("Plot", &Font_11x18, 1);
 				break;
+				case Select_Sensor:
+					SSD1306_GotoXY(3, 37);
+					SSD1306_Puts("             ", &Font_11x18, 1);
+					SSD1306_GotoXY(9, 37);
+					SSD1306_Puts("Sel Sensor", &Font_11x18, 1);
+				break;
 				case Reset_Sensor:
-					SSD1306_GotoXY(8, 37);
-					SSD1306_Puts("           ", &Font_11x18, 1);
-					SSD1306_GotoXY(8, 37);
+					SSD1306_GotoXY(3, 37);
+					SSD1306_Puts("             ", &Font_11x18, 1);
+					SSD1306_GotoXY(3, 37);
 					SSD1306_Puts("Reset Sense", &Font_11x18, 1);
-				break;
-				case Save_Info:
-					SSD1306_GotoXY(8, 37);
-					SSD1306_Puts("           ", &Font_11x18, 1);
-					SSD1306_GotoXY(14, 37);
-					SSD1306_Puts("Save Info", &Font_11x18, 1);
-				break;
-				case See_Info:
-					SSD1306_GotoXY(8, 37);
-					SSD1306_Puts("           ", &Font_11x18, 1);
-					SSD1306_GotoXY(19, 37);
-					SSD1306_Puts("See Info", &Font_11x18, 1);
-				break;
-				case Clean_Info:
-					SSD1306_GotoXY(8, 37);
-					SSD1306_Puts("           ", &Font_11x18, 1);
-					SSD1306_GotoXY(14, 37);
-					SSD1306_Puts("Clean Mem", &Font_11x18, 1);
 				break;
 				case Idle:
 				break;
@@ -376,55 +360,72 @@ void MenuGUI(void)
 			{
 				case Right:
 					Mode_Displayed++;
-					if(Mode_Displayed > Clean_Info)
+					if(Mode_Displayed > Reset_Sensor)
 						Mode_Displayed = Continuous;
 				break;
 				case Left:
 					Mode_Displayed--;
 					if(Mode_Displayed < Continuous)
-						Mode_Displayed = Clean_Info;
+						Mode_Displayed = Reset_Sensor;
 				break;
 				case Ok:
 					Configs.Mode = Mode_Displayed;
 					Not_Filled = false;
 					HAL_I2C_Mem_Write(&hi2c1, EEPROM_ADDR, 0x1, 1, (uint8_t *) &Mode_Displayed, 1, 100);
 					HAL_IWDG_Refresh(&hiwdg);
-					for(uint16_t i = 0; i < 3; i++)
+					for(uint16_t i = 0; i < animation_counts; i++)
 					{
 						switch(Mode_Displayed)
 						{
 							case Continuous:
 								Select_animation("Continuous", 8, 37);
 							break;
-							case One_shot:
-								Select_animation("One Shot  ", 19, 37);
+							case Hold:
+								Select_animation("Hold      ", 41, 37);
 							break;
 							case Plot:
 								Select_animation("Plot      ", 41, 37);
 							break;
+							case Select_Sensor:
+								Select_animation("Sel Sensor", 9, 37);
+							break;
 							case Reset_Sensor:
-								Select_animation("Reset Sensor", 41, 37);
-							break;
-							case Save_Info:
-								Select_animation("Save Info ", 14, 37);
-							break;
-							case See_Info:
-								Select_animation("See Info  ", 19, 37);
-							break;
-							case Clean_Info:
-								Select_animation("Clean Mem ", 14, 37);
+								Select_animation("Reset Sense", 3, 37);
 							break;
 							case Idle:
 							break;
 						}
 					}
+					Timer_Delay_250ms(1);
 				break;
 			}
 		}
 		else
 			HAL_IWDG_Refresh(&hiwdg);
 		Past_IDR_Read = IDR_Read;
-	}while(Not_Filled);
+	}while(Not_Filled && ISR != MCU_Reset);
+}
+
+//@TODO Code a fancy animation
+void Select_animation(char String[], uint16_t x, uint16_t y)
+{
+	static uint32_t i = 0;
+	extern const uint16_t animation_counts;
+	HAL_IWDG_Refresh(&hiwdg);
+	SSD1306_GotoXY(x, y);
+	SSD1306_Puts(String, &Font_11x18, 1);
+	SSD1306_UpdateScreen();
+	//Timer_Delay_250ms(1);
+	Timer_Delay_at_274PSC(30000, 1);
+	SSD1306_GotoXY(3, 37);
+	SSD1306_Puts("            ", &Font_11x18, 1);
+	SSD1306_UpdateScreen();
+
+	if(i == animation_counts)
+	{
+
+	}
+
 }
 
 void MCU_Reset_Subrutine(void)
@@ -433,12 +434,11 @@ void MCU_Reset_Subrutine(void)
 	SSD1306_GotoXY(23, 17);
 	SSD1306_Puts("Reset", &Font_16x26, 1);
 	SSD1306_UpdateScreen();
-	HAL_Delay(1000);
+	Timer_Delay_250ms(Seconds(1.5f));
 	NVIC_SystemReset(); //Reset de MCU
 }
 
-//SSD1306 Prints
-
+//OLED Prints
 void Fatal_Error_EEPROM(void)
 {
 	if(!Errors.EEPROM_Fatal)
@@ -473,7 +473,7 @@ void Fatal_Error_BH1750(void)
 	}
 }
 
-/**/
+//@TODO error check in NoConnected sensor error function
 void NoConnected_BH1750(void)
 {
 	if(!Errors.BH1750_NoConn)
@@ -492,19 +492,7 @@ void NoConnected_BH1750(void)
 	}
 }
 
-void Select_animation(char String[], uint16_t x, uint16_t y)
-{
-	SSD1306_GotoXY(x, y);
-	SSD1306_Puts(String, &Font_11x18, 1);
-	SSD1306_UpdateScreen();
-	Timer_Delay_250ms(1);
-	SSD1306_GotoXY(8, 37);
-	SSD1306_Puts("          ", &Font_11x18, 1);
-	SSD1306_UpdateScreen();
-}
-
-//SSD1306 Prints
-
+//@TODO At Print_Measure print allways in the center
 void Print_Measure(float Measure, uint16_t x, uint16_t y)
 {
 	char Integer_part[5];
@@ -552,29 +540,19 @@ void Errors_init()
 
 void Timer_Delay_250ms(uint16_t Value)
 {
-	bool Time_not_reached = true;
-	uint32_t i = 0;
-	__HAL_TIM_SET_COUNTER(&htim4, 0);
-	do{
-		HAL_IWDG_Refresh(&hiwdg);
-		if(__HAL_TIM_GET_COUNTER(&htim4) == EndOfCounts) //250ms
-		{
-			__HAL_TIM_SET_COUNTER(&htim4, 0);
-			i++;
-		}
-		if(i == Value)
-			Time_not_reached = false;
-	}while(Time_not_reached);
+	Timer_Delay_at_274PSC(EndOfCounts250ms, Value);
 }
 
 void Timer_Delay_at_274PSC(uint16_t Counts, uint16_t Overflows) //Period of 0.000003806
 {
+	if(Overflows == 0)
+		Overflows++;
 	bool Time_not_reached = true;
 	uint32_t i = 0;
 	__HAL_TIM_SET_COUNTER(&htim4, 0);
 	do{
 		HAL_IWDG_Refresh(&hiwdg);
-		if(__HAL_TIM_GET_COUNTER(&htim4) == Counts) //250ms
+		if(__HAL_TIM_GET_COUNTER(&htim4) == Counts)
 		{
 			__HAL_TIM_SET_COUNTER(&htim4, 0);
 			i++;
@@ -582,6 +560,19 @@ void Timer_Delay_at_274PSC(uint16_t Counts, uint16_t Overflows) //Period of 0.00
 		if(i == Overflows)
 			Time_not_reached = false;
 	}while(Time_not_reached);
+}
+
+void SensorRead(void)
+{
+	switch(Sensor)
+	{
+		case _BH1750:
+			if(BH1750_Read(&BH1750, &Measure) != Rojo_OK)
+				NoConnected_BH1750();
+		break;
+		case _TSL2561:
+		break;
+	}
 }
 
 void Configs_init(void)
@@ -628,8 +619,6 @@ void Borrame(void)
 		break;
 	}
 }
-
-
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -785,11 +774,11 @@ static void MX_TIM4_Init(void)
 
   /* USER CODE END TIM4_Init 1 */
   htim4.Instance = TIM4;
-  htim4.Init.Prescaler = 0;
+  htim4.Init.Prescaler = 274;
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim4.Init.Period = 65535;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
   {
     Error_Handler();

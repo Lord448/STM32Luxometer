@@ -62,8 +62,8 @@ all: main-build
 main-build: Luxometro.elf secondary-outputs
 
 # Tool invocations
-Luxometro.elf Luxometro.map: $(OBJS) $(USER_OBJS) /home/lord448/Escritorio/STM32\ Workspaces/Luxometro/Luxometro/STM32F103C8TX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "Luxometro.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m3 -T"/home/lord448/Escritorio/STM32 Workspaces/Luxometro/Luxometro/STM32F103C8TX_FLASH.ld" --specs=nosys.specs -Wl,-Map="Luxometro.map" -Wl,--gc-sections -static --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+Luxometro.elf Luxometro.map: $(OBJS) $(USER_OBJS) /home/lord448/Escritorio/STM32Workspaces/Luxometro/Luxometro/STM32F103C8TX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "Luxometro.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m3 -T"/home/lord448/Escritorio/STM32Workspaces/Luxometro/Luxometro/STM32F103C8TX_FLASH.ld" --specs=nosys.specs -Wl,-Map="Luxometro.map" -Wl,--gc-sections -static --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
