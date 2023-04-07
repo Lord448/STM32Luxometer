@@ -1,4 +1,5 @@
 /**
+ * 	Paused Cycle Scheme, cooperative tasks
  *  EEPROM Memory Map
  *  Memory regions
  *  0x0000 - 0x0002 Menu Configurations
@@ -23,13 +24,19 @@
 #define EEPROM_ADDR 0b10100000
 #define ReadMask (uint32_t) 0x1F
 #define EndOfCounts250ms 65454 //@274PSC: 250ms
-#define CountsOfSelectAnim 0xFFFF //@274PSC:
 #define SizeOfSlotsArray 5
 #define Seconds(x) x*4 //Only valid for the Timer_Delay_250ms
+#define DefaultSampleTime 10
+#define DefaultResolution 54612
+
+//#define USER_PLOT_DEBUG
+#define ONE_SENSOR
+#define USER_DEBUG
 
 I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c2;
-TIM_HandleTypeDef htim4;
+TIM_HandleTypeDef htim3; //Paused Cycle handler, ISR @ 10ms
+TIM_HandleTypeDef htim4; //Used for generic delay proposes, PSC@274, Period of 0.000003806
 IWDG_HandleTypeDef hiwdg;
 
 enum Sensors
@@ -45,6 +52,12 @@ enum ISR
 	None
 }volatile ISR;
 
+typedef enum PlotType
+{
+	BothAxis,
+	YAxis
+}PlotType;
+
 typedef enum Buttons
 {
 	Up = 0b11110,
@@ -59,6 +72,7 @@ typedef enum Mode
 	Continuous,
 	Hold,
 	Plot,
+	Config_Plot,
 	Select_Sensor,
 	Reset_Sensor,
 	Idle,
@@ -80,15 +94,53 @@ struct Configs
 	BH1750_Resolutions Resolution;
 }Configs;
 
+struct PlotConfigs
+{
+	PlotType PlotType;
+	uint16_t SampleTime;
+	uint16_t Resolution;
+	bool PrintLegends;
+}PlotConfigs = {
+		.PlotType = BothAxis,
+		.SampleTime = DefaultSampleTime,
+		.Resolution = DefaultResolution,
+		.PrintLegends = true
+};
+
+struct YAxisPosition
+{
+	uint16_t HigherRes;
+	uint16_t ThreeQuartersRes;
+	uint16_t MiddleRes;
+	uint16_t QuarterRes;
+	char HigherBuffer[7];
+	char ThreeQuarterBuffer[7];
+	char MiddleBuffer[7];
+	char QuarterBuffer[7];
+}static YAxisPosition =
+{
+	.HigherRes = DefaultResolution,
+	.ThreeQuartersRes = DefaultResolution * 0.75,
+	.MiddleRes = DefaultResolution * 0.5,
+	.QuarterRes = DefaultResolution * 0.25
+};
+
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_I2C2_Init(void);
 static void MX_IWDG_Init(void);
+static void MX_TIM3_Init(void);
 static void MX_TIM4_Init(void);
 void Continous_mode(void);
 void Hold_mode(void);
 void Plot_mode(void);
+void SSD1306_DrawFilledTriangle(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint16_t x3, uint16_t y3, SSD1306_COLOR_t color);
+void Print_OkToContinue(uint16_t XOffset, uint16_t YLimit);
+
+void Config_plot_mode(void);
+
+
 void Reset_sensor_mode(void);
 void Flash_configs(void);
 void MenuGUI(void);
@@ -104,12 +156,20 @@ void Timer_Delay_at_274PSC(uint16_t Counts, uint16_t Overflows); //Period of 0.0
 void SensorRead(void);
 void Errors_init();
 void Configs_init(void);
+void CharNumberFromFloat(float Number, uint16_t DecimalsToConsider, uint16_t CountStringFinisher, uint16_t *NumberOfIntegers, uint16_t *NumberOfDecimals);
+uint16_t CharsNumberFromInt(uint32_t Number, uint16_t CountFinisherChar);
+uint16_t NumberOfCharsUsed(char *String, uint16_t CountFinisherChar);
+
+#ifdef USER_DEBUG
+volatile bool PauseFlag = true;
+#endif
 
 const char Slots[5][7] = {"Slot 1", "Slot 2", "Slot 3", "Slot 5", "Slot 6"};
 float Measure;
 Rojo_BH1750 BH1750;
 uint32_t IDR_Read;
 uint8_t Config_buffer[2]; /*Solve here*/
+bool comeFromMenu = false;
 
 int main(void)
 {
@@ -119,6 +179,7 @@ int main(void)
   MX_I2C1_Init();
   MX_I2C2_Init();
   MX_IWDG_Init();
+  MX_TIM3_Init();
   MX_TIM4_Init();
   HAL_IWDG_Init(&hiwdg);
   SSD1306_Init();
@@ -127,10 +188,13 @@ int main(void)
   //SSD1306_GotoXY(7, 5);
   //SSD1306_Puts("Loading", &Font_16x26, 1);
 
+#ifdef ONE_SENSOR
   //Temporal asignation
   Sensor = _BH1750;
   //Temporal asignation
+#endif
 
+  ISR = None;
   SSD1306_GotoXY(3, 37);
   SSD1306_Puts("Version 0.3", &Font_11x18, 1);
   SSD1306_UpdateScreen();
@@ -161,11 +225,12 @@ int main(void)
   //Final
   HAL_IWDG_Refresh(&hiwdg);
   HAL_TIM_Base_Start(&htim4);
-  ISR = None;
   Timer_Delay_250ms(Seconds(1.5f));
   //Final Clear
   SSD1306_Clear();
   SSD1306_UpdateScreen();
+  //Starting the paused cycle handler
+  HAL_TIM_Base_Start_IT(&htim3);
   while (1)
   {
 	  //Check ISR's
@@ -173,8 +238,8 @@ int main(void)
 	  {
 	  	  case Menu:
 	  		  ISR = None;
+	  		  comeFromMenu = true;
 	  		  MenuGUI();
-	  		  //Configs.Last_Mode = Idle;
 	  	  break;
 	  	  case MCU_Reset:
 	  		  ISR = None;
@@ -184,6 +249,9 @@ int main(void)
 	  	  break;
 	  }
 	  //Check & Run the mode
+#ifdef USER_PLOT_DEBUG
+	  Configs.Mode = Plot;
+#endif
 	  switch(Configs.Mode)
 	  {
 	  	  case Continuous: //Basic Software mode
@@ -196,6 +264,9 @@ int main(void)
 	  		  Reset_sensor_mode();
 		  break;
 	  	  case Plot: //Basic Software mode
+	  		  Plot_mode();
+	  	  break;
+	  	  case Config_Plot:
 	  	  break;
 	  	  case Select_Sensor: //IR Software mode
 	  	  break;
@@ -205,6 +276,16 @@ int main(void)
 	  	  break;
 	  }
 	  HAL_IWDG_Refresh(&hiwdg);
+	  //Paused Cycle
+#ifdef USER_DEBUG
+	  while(PauseFlag)
+		  HAL_IWDG_Refresh(&hiwdg);
+	  PauseFlag = true;
+#else
+	  HAL_SuspendTick();
+	  HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
+	  HAL_ResumeTick();
+#endif
   }
 }
 
@@ -212,7 +293,7 @@ int main(void)
 void Continous_mode(void)
 {
 	HAL_IWDG_Refresh(&hiwdg);
-	if(Configs.Last_Mode != Continuous)
+	if(Configs.Last_Mode != Continuous || comeFromMenu)
 	{
 		SSD1306_Clear();
 		SSD1306_GotoXY(36, 8);
@@ -225,11 +306,12 @@ void Continous_mode(void)
 	HAL_IWDG_Refresh(&hiwdg);
 	Print_Measure(Measure, 14, 30);
 	Configs.Last_Mode = Continuous;
+	comeFromMenu = false;
 }
 
 void Hold_mode(void)
 {
-	if(Configs.Last_Mode != Hold)
+	if(Configs.Last_Mode != Hold || comeFromMenu)
 	{
 		SSD1306_Clear();
 		SSD1306_GotoXY(36, 8);
@@ -242,21 +324,146 @@ void Hold_mode(void)
 	Print_Measure(Measure, 14, 30);
 	wait_until_press(Ok);
 	Configs.Last_Mode = Hold;
+	comeFromMenu = false;
 }
 
-//@TODO all plot mode
+
+//@TODO Initial configurations done, print in sequence time
 void Plot_mode(void)
 {
-	SSD1306_Clear();
+	static bool ChangedConfigs = false; //Checks if the user has pressed a button
+	const uint16_t XAxis_High = 57; //Defines the high of the axis
+	const uint16_t YScreenRes = 63; //Total screen pixel in y axis
+	uint16_t YAxis_Offset;      //Defines the pixels at the right for the axis print
+	uint16_t XAxis_Limit;       //Defines the right limit (near the "t")
+	uint16_t YAxis_LimitUP;     //Defines the upper limit
+	uint16_t HigherYcoordenate; //The higher coordinate that can be plotted
+	uint16_t NumberOfChars;
+	uint16_t YLimit;
+
 	HAL_IWDG_Refresh(&hiwdg);
-	SSD1306_GotoXY(14, 18);
-	SSD1306_Puts("Mode not ready", &Font_7x10, 1);
-	SSD1306_GotoXY(6, 33);
-	SSD1306_Puts("Press OK to continue", &Font_7x10, 1);
+	if(Configs.Last_Mode != Plot || comeFromMenu || ChangedConfigs)
+	{
+		//Calculate the Y Axis offset
+		NumberOfChars = CharsNumberFromInt(YAxisPosition.HigherRes, false);
+		YAxis_Offset = (NumberOfChars * 7) + 5;
+		YAxis_LimitUP = 0;
+		XAxis_Limit = 128;
+		SSD1306_Clear();
+		//X Axis
+		if(PlotConfigs.PlotType == BothAxis)
+		{
+			if(PlotConfigs.PrintLegends)
+			{
+				XAxis_Limit = 119;
+				SSD1306_GotoXY(120, 53);
+				SSD1306_Puts("t", &Font_7x10, 1);
+			}
+			SSD1306_DrawLine(0, XAxis_High, XAxis_Limit, XAxis_High, 1);
+			//X Arrow
+			SSD1306_DrawFilledTriangle(XAxis_Limit-5, XAxis_High-3, XAxis_Limit-5, XAxis_High+3, XAxis_Limit, XAxis_High, 1);
+		}
+		//Y Axis
+		if(PlotConfigs.PrintLegends)
+		{
+			YAxis_LimitUP = 11;
+			SSD1306_GotoXY(YAxis_Offset - 7, 0);
+			SSD1306_Puts("lx", &Font_7x10, 1);
+		}
+		SSD1306_DrawLine(YAxis_Offset, XAxis_High, YAxis_Offset, YAxis_LimitUP, 1);
+		HigherYcoordenate = YAxis_LimitUP + 10;
+		//Y Axis numeric legends -- Forced, not touched by the user
+		if(!PlotConfigs.PrintLegends) // Print all values
+		{
+			//Text prints
+			sprintf(YAxisPosition.ThreeQuarterBuffer, "%d", (int) YAxisPosition.ThreeQuartersRes);
+			sprintf(YAxisPosition.QuarterBuffer, "%d", (int) YAxisPosition.QuarterRes);
+			SSD1306_GotoXY(0, (((YScreenRes - HigherYcoordenate) * 0.25) + HigherYcoordenate) - 5);
+			SSD1306_Puts(YAxisPosition.ThreeQuarterBuffer, &Font_7x10, 1);
+			SSD1306_GotoXY(0, (((YScreenRes - HigherYcoordenate) * 0.75) + HigherYcoordenate) - 5);
+			SSD1306_Puts(YAxisPosition.QuarterBuffer, &Font_7x10, 1);
+			//Line prints
+			SSD1306_DrawLine(YAxis_Offset, (((YScreenRes - HigherYcoordenate) * 0.25) + HigherYcoordenate), (CharsNumberFromInt(YAxisPosition.ThreeQuartersRes, false) * 7) + 1, (((YScreenRes - HigherYcoordenate) * 0.25) + HigherYcoordenate), 1); //ThreeQuarter Line
+			SSD1306_DrawLine(YAxis_Offset, (((YScreenRes - HigherYcoordenate) * 0.75) + HigherYcoordenate), (CharsNumberFromInt(YAxisPosition.QuarterRes, false) * 7) + 1, (((YScreenRes - HigherYcoordenate) * 0.75) + HigherYcoordenate), 1); //Quarter Line
+			//Text prints
+			sprintf(YAxisPosition.HigherBuffer, "%d", (int) YAxisPosition.HigherRes);
+			sprintf(YAxisPosition.MiddleBuffer, "%d", (int) YAxisPosition.MiddleRes);
+			SSD1306_GotoXY(0, HigherYcoordenate - 5);
+			SSD1306_Puts(YAxisPosition.HigherBuffer, &Font_7x10, 1);
+			SSD1306_GotoXY(0, (((YScreenRes - HigherYcoordenate) / 2) + HigherYcoordenate) - 5);
+			SSD1306_Puts(YAxisPosition.MiddleBuffer, &Font_7x10, 1);
+			///Line Prints
+			SSD1306_DrawLine(YAxis_Offset, HigherYcoordenate, (CharsNumberFromInt(YAxisPosition.HigherRes, false) * 7) + 1, HigherYcoordenate, 1); //Higher Line
+			SSD1306_DrawLine(YAxis_Offset, (((YScreenRes - HigherYcoordenate) / 2) + HigherYcoordenate), (CharsNumberFromInt(YAxisPosition.MiddleRes, false) * 7) + 1, (((YScreenRes - HigherYcoordenate) / 2) + HigherYcoordenate), 1); //Middle Line
+		}
+		else
+		{
+			//Text prints
+			sprintf(YAxisPosition.HigherBuffer, "%d", (int) YAxisPosition.HigherRes);
+			sprintf(YAxisPosition.MiddleBuffer, "%d", (int) YAxisPosition.MiddleRes);
+			SSD1306_GotoXY(0, HigherYcoordenate - 5);
+			SSD1306_Puts(YAxisPosition.HigherBuffer, &Font_7x10, 1);
+			SSD1306_GotoXY(0, (((XAxis_High - HigherYcoordenate) / 2) + HigherYcoordenate) - 5);
+			SSD1306_Puts(YAxisPosition.MiddleBuffer, &Font_7x10, 1);
+			///Line Prints
+			SSD1306_DrawLine(YAxis_Offset, HigherYcoordenate, (CharsNumberFromInt(YAxisPosition.HigherRes, false) * 7) + 1, HigherYcoordenate, 1); //Higher Line
+			SSD1306_DrawLine(YAxis_Offset, (((XAxis_High - HigherYcoordenate) / 2) + HigherYcoordenate), (CharsNumberFromInt(YAxisPosition.MiddleRes, false) * 7) + 1, (((XAxis_High - HigherYcoordenate) / 2) + HigherYcoordenate), 1); //Middle Line
+		}
+		//Y Arrow
+		SSD1306_DrawFilledTriangle(YAxis_Offset-3, YAxis_LimitUP+5, YAxis_Offset+3, YAxis_LimitUP+5, YAxis_Offset, YAxis_LimitUP, 1);
+		HAL_IWDG_Refresh(&hiwdg);
+		SSD1306_UpdateScreen();
+		switch(PlotConfigs.PlotType)
+		{
+			case BothAxis:
+				YLimit = XAxis_High;
+			break;
+			case YAxis:
+				YLimit = YScreenRes;
+			break;
+		}
+		Print_OkToContinue(YAxis_Offset, YLimit);
+	}
+
+	//Do the magic :D
+
+	Configs.Last_Mode = Plot;
+	comeFromMenu = false;
+	HAL_IWDG_Refresh(&hiwdg);
+	//Read value and put a point
+}
+
+//Plot Functions
+void Print_OkToContinue(uint16_t XOffset, uint16_t YLimit)
+{
+	const uint16_t CharsX = 56;
+	const uint16_t XCoordinate = (((128-CharsX) + XOffset)/2);
+	const uint16_t CharsY = 33;
+	const uint16_t CharYDim = 10;
+	const uint16_t YPixelStep = 1;
+	const uint16_t YInitialCoordinate = (YLimit - CharsY) / 2;
+
+	SSD1306_GotoXY(XCoordinate, YInitialCoordinate);
+	SSD1306_Puts("Press OK", &Font_7x10, 1);
+	SSD1306_GotoXY(XCoordinate, YInitialCoordinate + (CharYDim) + YPixelStep);
+	SSD1306_Puts("to start", &Font_7x10, 1);
+	SSD1306_GotoXY(XCoordinate, YInitialCoordinate + (CharYDim*2) + YPixelStep);
+	SSD1306_Puts("the plot", &Font_7x10, 1);
 	SSD1306_UpdateScreen();
 	wait_until_press(Ok);
-	Configs.Mode = Continuous;
+	SSD1306_GotoXY(XCoordinate, YInitialCoordinate);
+	SSD1306_Puts("        ", &Font_7x10, 1);
+	SSD1306_GotoXY(XCoordinate, YInitialCoordinate + (CharYDim) + YPixelStep);
+	SSD1306_Puts("        ", &Font_7x10, 1);
+	SSD1306_GotoXY(XCoordinate, YInitialCoordinate + (CharYDim*2) + YPixelStep);
+	SSD1306_Puts("        ", &Font_7x10, 1);
+	SSD1306_UpdateScreen();
 }
+
+void Config_plot_mode(void);
+//Configuration plot functions
+
+//Configuration plot functions
 
 //@TODO check error reset sensor mode
 void Reset_sensor_mode(void)
@@ -291,11 +498,7 @@ void Reset_sensor_mode(void)
 void Select_sensor_mode(void);
 //@TODO All select diode sensor mode
 void Select_diode_mode(void);
-//@TODO Flash configurations
-void Flash_configs(void)
-{
 
-}
 
 void MenuGUI(void)
 {
@@ -338,6 +541,12 @@ void MenuGUI(void)
 					SSD1306_GotoXY(41, 37);
 					SSD1306_Puts("Plot", &Font_11x18, 1);
 				break;
+				case Config_Plot:
+					SSD1306_GotoXY(3, 37);
+					SSD1306_Puts("             ", &Font_11x18, 1);
+					SSD1306_GotoXY(3, 37);
+					SSD1306_Puts("Config Plot", &Font_11x18, 1);
+				break;
 				case Select_Sensor:
 					SSD1306_GotoXY(3, 37);
 					SSD1306_Puts("             ", &Font_11x18, 1);
@@ -378,16 +587,19 @@ void MenuGUI(void)
 						switch(Mode_Displayed)
 						{
 							case Continuous:
-								Select_animation("Continuous", 8, 37);
+								Select_animation("Continuous ", 8, 37);
 							break;
 							case Hold:
-								Select_animation("Hold      ", 41, 37);
+								Select_animation("Hold       ", 41, 37);
 							break;
 							case Plot:
-								Select_animation("Plot      ", 41, 37);
+								Select_animation("Plot       ", 41, 37);
+							break;
+							case Config_Plot:
+								Select_animation("Config Plot", 3, 37);
 							break;
 							case Select_Sensor:
-								Select_animation("Sel Sensor", 9, 37);
+								Select_animation("Sel Sensor ", 9, 37);
 							break;
 							case Reset_Sensor:
 								Select_animation("Reset Sense", 3, 37);
@@ -403,7 +615,7 @@ void MenuGUI(void)
 		else
 			HAL_IWDG_Refresh(&hiwdg);
 		Past_IDR_Read = IDR_Read;
-	}while(Not_Filled && ISR != MCU_Reset);
+	}while(Not_Filled && ISR == None);
 }
 
 //@TODO Code a fancy animation
@@ -428,17 +640,7 @@ void Select_animation(char String[], uint16_t x, uint16_t y)
 
 }
 
-void MCU_Reset_Subrutine(void)
-{
-	SSD1306_Clear();
-	SSD1306_GotoXY(23, 17);
-	SSD1306_Puts("Reset", &Font_16x26, 1);
-	SSD1306_UpdateScreen();
-	Timer_Delay_250ms(Seconds(1.5f));
-	NVIC_SystemReset(); //Reset de MCU
-}
-
-//OLED Prints
+//Error handlers
 void Fatal_Error_EEPROM(void)
 {
 	if(!Errors.EEPROM_Fatal)
@@ -473,14 +675,16 @@ void Fatal_Error_BH1750(void)
 	}
 }
 
-//@TODO error check in NoConnected sensor error function
+//@TODO Bad prints, doesn't wait of the button ok
 void NoConnected_BH1750(void)
 {
 	if(!Errors.BH1750_NoConn)
 	{
 		SSD1306_Clear();
 		SSD1306_GotoXY(3, 18);
-		SSD1306_Puts("BH1750 No Connected", &Font_7x10, 1);
+		SSD1306_Puts("BH1750", &Font_7x10, 1);
+		SSD1306_GotoXY(3, 18);
+		SSD1306_Puts("No Connected", &Font_7x10, 1);
 		SSD1306_GotoXY(6, 33);
 		SSD1306_Puts("Press OK to continue", &Font_7x10, 1);
 		SSD1306_UpdateScreen();
@@ -492,7 +696,8 @@ void NoConnected_BH1750(void)
 	}
 }
 
-//@TODO At Print_Measure print allways in the center
+//Auxiliar functions
+//@TODO At Print_Measure print allways in the center, x left when big number
 void Print_Measure(float Measure, uint16_t x, uint16_t y)
 {
 	char Integer_part[5];
@@ -562,12 +767,22 @@ void Timer_Delay_at_274PSC(uint16_t Counts, uint16_t Overflows) //Period of 0.00
 	}while(Time_not_reached);
 }
 
+void MCU_Reset_Subrutine(void)
+{
+	SSD1306_Clear();
+	SSD1306_GotoXY(23, 17);
+	SSD1306_Puts("Reset", &Font_16x26, 1);
+	SSD1306_UpdateScreen();
+	Timer_Delay_250ms(Seconds(1.5f));
+	NVIC_SystemReset(); //Reset de MCU
+}
+
 void SensorRead(void)
 {
 	switch(Sensor)
 	{
 		case _BH1750:
-			if(BH1750_Read(&BH1750, &Measure) != Rojo_OK)
+			if(BH1750_Read(&BH1750, &Measure) != Rojo_OK) //Saving the value into a global
 				NoConnected_BH1750();
 		break;
 		case _TSL2561:
@@ -575,6 +790,65 @@ void SensorRead(void)
 	}
 }
 
+uint16_t CharsNumberFromInt(uint32_t Number, uint16_t CountStringFinisher)
+{
+    uint16_t NumberOfChars = 0;
+
+    while (Number > 0)
+    {
+        Number /= 10;
+        NumberOfChars++;
+    }
+    if(CountStringFinisher)
+        NumberOfChars++;
+    return NumberOfChars;
+}
+
+void CharNumberFromFloat(float Number, uint16_t DecimalsToConsider, uint16_t CountStringFinisher, uint16_t *NumberOfIntegers, uint16_t *NumberOfDecimals)
+{
+	uint32_t IntegerPart, DecimalPart;
+	uint16_t Multiplier = 1;
+	uint16_t Integers = 0, Decimals = 0;
+	for(uint16_t i = 0; i > DecimalsToConsider; i++)
+	{
+		Multiplier *= 10;
+	}
+	IntegerPart = (uint32_t) Number;
+	DecimalPart = (Number - IntegerPart) * Multiplier;
+	while(IntegerPart > 0)
+	{
+		IntegerPart /= 10;
+		Integers++;
+	}
+	if(CountStringFinisher)
+		Integers++;
+	while(DecimalPart > 0)
+	{
+		DecimalPart /= 10;
+		Decimals++;
+	}
+	if(CountStringFinisher)
+		Decimals++;
+
+	*NumberOfIntegers = Integers;
+	*NumberOfDecimals = Decimals;
+}
+
+uint16_t NumberOfCharsUsed(char *String, uint16_t CountStringFinisher)
+{
+    uint16_t NumChars;
+    while(*String != 0)
+    {
+        NumChars++;
+        String++;
+    }
+    if(CountStringFinisher)
+        NumChars++;
+    return NumChars;
+}
+
+
+//Configurations
 void Configs_init(void)
 {
 	Configs.Factory_Values = 0;
@@ -583,12 +857,30 @@ void Configs_init(void)
 	Configs.Resolution = Medium_Res;
 }
 
+//@TODO Flash configurations
+void Flash_configs(void)
+{
+
+}
+
+//ISR Handlers
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
 	if(GPIO_Pin == GPIO_PIN_0)
-		ISR = Menu;
+	{
+		if(ISR == None)
+			ISR = Menu;
+	}
 	if(GPIO_Pin == GPIO_PIN_1)
 		ISR = MCU_Reset;
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+#ifdef USER_DEBUG
+	//Breaks the while in the main function
+	PauseFlag = false;
+#endif
 }
 
 void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
@@ -619,6 +911,7 @@ void Borrame(void)
 		break;
 	}
 }
+
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -752,6 +1045,51 @@ static void MX_IWDG_Init(void)
   /* USER CODE BEGIN IWDG_Init 2 */
 
   /* USER CODE END IWDG_Init 2 */
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 10;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 65454;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
 
 }
 
