@@ -1,5 +1,7 @@
 /**
  * 	Paused Cycle Scheme, cooperative tasks
+ * 	Error Codes
+ * 	0x0000:
  *  EEPROM Memory Map
  *  Memory regions
  *  0x0000 - 0x0002 Menu Configurations
@@ -30,8 +32,10 @@
 #define DefaultResolution 54612
 
 //#define USER_PLOT_DEBUG
+#define USER_CONF_P_DEBUG
 #define ONE_SENSOR
 #define USER_DEBUG
+#define SHOW_LOADING
 
 I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c2;
@@ -94,19 +98,6 @@ struct Configs
 	BH1750_Resolutions Resolution;
 }Configs;
 
-struct PlotConfigs
-{
-	PlotType PlotType;
-	uint16_t SampleTime;
-	uint16_t Resolution;
-	bool PrintLegends;
-}PlotConfigs = {
-		.PlotType = BothAxis,
-		.SampleTime = DefaultSampleTime,
-		.Resolution = DefaultResolution,
-		.PrintLegends = true
-};
-
 struct YAxisPosition
 {
 	uint16_t HigherRes;
@@ -125,6 +116,14 @@ struct YAxisPosition
 	.QuarterRes = DefaultResolution * 0.25
 };
 
+typedef struct PlotConfigs
+{
+	PlotType PlotType;
+	uint16_t SampleTime;
+	uint16_t Resolution;
+	bool PrintLegends;
+}PlotConfigs;
+
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
@@ -139,7 +138,7 @@ void SSD1306_DrawFilledTriangle(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t 
 void Print_OkToContinue(uint16_t XOffset, uint16_t YLimit);
 
 void Config_plot_mode(void);
-
+void Config_PlotSelectAnim(char *string);
 
 void Reset_sensor_mode(void);
 void Flash_configs(void);
@@ -159,10 +158,25 @@ void Configs_init(void);
 void CharNumberFromFloat(float Number, uint16_t DecimalsToConsider, uint16_t CountStringFinisher, uint16_t *NumberOfIntegers, uint16_t *NumberOfDecimals);
 uint16_t CharsNumberFromInt(uint32_t Number, uint16_t CountFinisherChar);
 uint16_t NumberOfCharsUsed(char *String, uint16_t CountFinisherChar);
+uint16_t CenterXPrint(char *string, uint16_t InitialCoordinate, uint16_t LastCoordinate, FontDef_t Font);
 
 #ifdef USER_DEBUG
 volatile bool PauseFlag = true;
 #endif
+
+const PlotConfigs DefaultPlotSettings = {
+		.PlotType = BothAxis,
+		.SampleTime = DefaultSampleTime,
+		.Resolution = DefaultResolution,
+		.PrintLegends = true
+};
+
+PlotConfigs GlobalConfigs  = {
+		.PlotType = DefaultPlotSettings.PlotType,
+		.SampleTime = DefaultPlotSettings.SampleTime,
+		.Resolution = DefaultPlotSettings.Resolution,
+		.PrintLegends = DefaultPlotSettings.PrintLegends
+};
 
 const char Slots[5][7] = {"Slot 1", "Slot 2", "Slot 3", "Slot 5", "Slot 6"};
 float Measure;
@@ -185,9 +199,10 @@ int main(void)
   SSD1306_Init();
   Configs_init();
   //Initial Prints
-  //SSD1306_GotoXY(7, 5);
-  //SSD1306_Puts("Loading", &Font_16x26, 1);
-
+#ifdef SHOW_LOADING
+  SSD1306_GotoXY(7, 5);
+  SSD1306_Puts("Loading", &Font_16x26, 1);
+#endif
 #ifdef ONE_SENSOR
   //Temporal asignation
   Sensor = _BH1750;
@@ -213,6 +228,7 @@ int main(void)
 	  Fatal_Error_EEPROM();
   if(Errors.EEPROM_Fatal || Configs.Factory_Values)
 	  Flash_configs(); //Start by the FLASH configurations
+  //Code here the backup EEPROM settings
   else if(!Configs.Factory_Values)
   {
 	  if(HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0x1, 1, Config_buffer, 2/*@TODO Change the neccesary buffer*/, 100) != HAL_OK)
@@ -225,7 +241,9 @@ int main(void)
   //Final
   HAL_IWDG_Refresh(&hiwdg);
   HAL_TIM_Base_Start(&htim4);
+#ifndef SHOW_LOADING
   Timer_Delay_250ms(Seconds(1.5f));
+#endif
   //Final Clear
   SSD1306_Clear();
   SSD1306_UpdateScreen();
@@ -251,6 +269,8 @@ int main(void)
 	  //Check & Run the mode
 #ifdef USER_PLOT_DEBUG
 	  Configs.Mode = Plot;
+#elif defined(USER_CONF_P_DEBUG)
+	  Configs.Mode = Config_Plot;
 #endif
 	  switch(Configs.Mode)
 	  {
@@ -266,7 +286,8 @@ int main(void)
 	  	  case Plot: //Basic Software mode
 	  		  Plot_mode();
 	  	  break;
-	  	  case Config_Plot:
+	  	  case Config_Plot: //Basic Software mode
+	  		  Config_plot_mode();
 	  	  break;
 	  	  case Select_Sensor: //IR Software mode
 	  	  break;
@@ -328,7 +349,7 @@ void Hold_mode(void)
 }
 
 
-//@TODO Initial configurations done, print in sequence time
+//@TODO Initial configurations done, print in sequence time, do first the config menu
 void Plot_mode(void)
 {
 	static bool ChangedConfigs = false; //Checks if the user has pressed a button
@@ -351,9 +372,9 @@ void Plot_mode(void)
 		XAxis_Limit = 128;
 		SSD1306_Clear();
 		//X Axis
-		if(PlotConfigs.PlotType == BothAxis)
+		if(GlobalConfigs.PlotType == BothAxis)
 		{
-			if(PlotConfigs.PrintLegends)
+			if(GlobalConfigs.PrintLegends)
 			{
 				XAxis_Limit = 119;
 				SSD1306_GotoXY(120, 53);
@@ -364,7 +385,7 @@ void Plot_mode(void)
 			SSD1306_DrawFilledTriangle(XAxis_Limit-5, XAxis_High-3, XAxis_Limit-5, XAxis_High+3, XAxis_Limit, XAxis_High, 1);
 		}
 		//Y Axis
-		if(PlotConfigs.PrintLegends)
+		if(GlobalConfigs.PrintLegends)
 		{
 			YAxis_LimitUP = 11;
 			SSD1306_GotoXY(YAxis_Offset - 7, 0);
@@ -373,7 +394,7 @@ void Plot_mode(void)
 		SSD1306_DrawLine(YAxis_Offset, XAxis_High, YAxis_Offset, YAxis_LimitUP, 1);
 		HigherYcoordenate = YAxis_LimitUP + 10;
 		//Y Axis numeric legends -- Forced, not touched by the user
-		if(!PlotConfigs.PrintLegends) // Print all values
+		if(!GlobalConfigs.PrintLegends) // Print all values
 		{
 			//Text prints
 			sprintf(YAxisPosition.ThreeQuarterBuffer, "%d", (int) YAxisPosition.ThreeQuartersRes);
@@ -413,7 +434,7 @@ void Plot_mode(void)
 		SSD1306_DrawFilledTriangle(YAxis_Offset-3, YAxis_LimitUP+5, YAxis_Offset+3, YAxis_LimitUP+5, YAxis_Offset, YAxis_LimitUP, 1);
 		HAL_IWDG_Refresh(&hiwdg);
 		SSD1306_UpdateScreen();
-		switch(PlotConfigs.PlotType)
+		switch(GlobalConfigs.PlotType)
 		{
 			case BothAxis:
 				YLimit = XAxis_High;
@@ -460,9 +481,233 @@ void Print_OkToContinue(uint16_t XOffset, uint16_t YLimit)
 	SSD1306_UpdateScreen();
 }
 
-void Config_plot_mode(void);
-//Configuration plot functions
+//@TODO Printing the rectangle menu, all the other stages
+void Config_plot_mode(void)
+{
 
+
+	typedef enum ConfigStage
+	{
+		none,
+		Selecting,
+		Resolution,
+		SampleTime,
+		Graphic
+	}ConfigStage;
+
+	static PlotConfigs LocalBuffers = {
+			.PlotType = DefaultPlotSettings.PlotType,
+			.SampleTime = DefaultPlotSettings.SampleTime,
+			.Resolution = DefaultPlotSettings.Resolution,
+			.PrintLegends = DefaultPlotSettings.PrintLegends
+	};
+
+	struct GeneralBuffers
+	{
+		char *ResBuffer;
+		char *SampleBuffer;
+		char Units[3];
+		const char ResolutionPrint[10];
+		const char SamplePrint[10];
+		const char GraphicPrint[10];
+
+	}GeneralBuffers = {
+			.Units = "ms",
+			.ResolutionPrint = "Res",
+			.SamplePrint = "Sample",
+			.GraphicPrint = "Graphic"
+	};
+
+	const uint16_t XOffset = 10; //Minimum of 2
+	const uint16_t ResY = 13;
+	const uint16_t SampleY = 25;
+	const uint16_t GraphicY = 37;
+	static ConfigStage CurrentStage = Selecting;
+	static ConfigStage Cursor = Resolution;
+	static bool EnteredGraphic = false;
+	static bool CursorMoved = false;
+	bool ReprintInitialPrint = false;
+
+	void DrawResRect(bool Draw)
+	{
+		if(Draw)
+			SSD1306_DrawRectangle(XOffset - 2, ResY - 3, (NumberOfCharsUsed((char *) GeneralBuffers.ResolutionPrint, false) * 7) + 3, 13, 1);
+		else
+			SSD1306_DrawRectangle(XOffset - 2, ResY - 3, (NumberOfCharsUsed((char *) GeneralBuffers.ResolutionPrint, false) * 7) + 3, 13, 0);
+	}
+
+	HAL_IWDG_Refresh(&hiwdg);
+	if(Configs.Last_Mode != Config_Plot || comeFromMenu || ReprintInitialPrint)
+	{
+		SSD1306_Clear();
+		LocalBuffers.PlotType = GlobalConfigs.PlotType;
+		LocalBuffers.SampleTime = GlobalConfigs.SampleTime;
+		LocalBuffers.Resolution = GlobalConfigs.Resolution;
+		LocalBuffers.PrintLegends = GlobalConfigs.Resolution;
+		GeneralBuffers.ResBuffer = (char *) calloc(CharsNumberFromInt(LocalBuffers.Resolution, false), sizeof(char));
+
+		if(GeneralBuffers.ResBuffer == NULL)
+		{
+			//Send error message || Code error 0xAF
+			SSD1306_Clear();
+			SSD1306_GotoXY(CenterXPrint("Fatal Error, code: 0xAF", 0, 128, Font_11x18), 20);
+			SSD1306_Puts("Fatal Error, code: 0xAF", &Font_11x18, 1);
+			SSD1306_UpdateScreen();
+			return;
+		}
+		else
+		{
+			sprintf(GeneralBuffers.ResBuffer, "%d", (int) LocalBuffers.Resolution);
+		}
+
+		GeneralBuffers.SampleBuffer = (char *) calloc(CharsNumberFromInt(LocalBuffers.SampleTime, false), sizeof(char));
+
+		if(GeneralBuffers.SampleBuffer == NULL)
+		{
+			//Send error message || Code error 0xAA
+			SSD1306_Clear();
+			SSD1306_GotoXY(CenterXPrint("Fatal Error, code: 0xAA", 0, 128, Font_11x18), 20);
+			SSD1306_Puts("Fatal Error, code: 0xAA", &Font_11x18, 1);
+			SSD1306_UpdateScreen();
+			return;
+		}
+		else
+		{
+			sprintf(GeneralBuffers.SampleBuffer, "%d", (int) LocalBuffers.SampleTime);
+		}
+		HAL_IWDG_Refresh(&hiwdg);
+		//List of configurations
+		SSD1306_GotoXY(XOffset, ResY);
+		SSD1306_Puts((char *) GeneralBuffers.ResolutionPrint, &Font_7x10, 1);
+		SSD1306_GotoXY(XOffset, SampleY);
+		SSD1306_Puts((char *) GeneralBuffers.SamplePrint, &Font_7x10, 1);
+		SSD1306_GotoXY(XOffset, GraphicY);
+		SSD1306_Puts((char *) GeneralBuffers.GraphicPrint, &Font_7x10, 1);
+		//Value Selected
+		SSD1306_GotoXY(XOffset + (NumberOfCharsUsed((char *) GeneralBuffers.ResolutionPrint, false) * 7) + 5, 13);
+		SSD1306_Puts(GeneralBuffers.ResBuffer, &Font_7x10, 1);
+		SSD1306_GotoXY(XOffset + (NumberOfCharsUsed((char *) GeneralBuffers.SamplePrint, false) * 7) + 5, 25);
+		SSD1306_Puts(GeneralBuffers.SampleBuffer, &Font_7x10, 1);
+		SSD1306_UpdateScreen();
+		free(GeneralBuffers.ResBuffer);
+		free(GeneralBuffers.SampleBuffer);
+	}
+	//Start the configuration
+	HAL_IWDG_Refresh(&hiwdg);
+	switch(CurrentStage)
+	{
+		case Selecting:
+			HAL_IWDG_Refresh(&hiwdg);
+			IDR_Read = (GPIOA -> IDR & ReadMask);
+			switch(IDR_Read)
+			{
+				case Up:
+					Cursor--;
+					if(Cursor > Resolution)
+						Cursor = Resolution;
+					else
+						CursorMoved = true;
+				break;
+				case Down:
+					Cursor++;
+					if(Cursor < Graphic)
+						Cursor = Graphic;
+					else
+						CursorMoved = true;
+				break;
+				case Ok:
+						CurrentStage = Cursor;
+						if(Cursor == Graphic)
+							EnteredGraphic = true;
+						//@TODO Select animation
+				break;
+				default:
+				break;
+			}
+			//Printing cursor
+			switch(Cursor)
+			{
+				case Resolution:
+					if(CursorMoved)
+					{
+						//Erase Sample Rectangle
+						SSD1306_DrawRectangle(XOffset - 2, SampleY - 1, (NumberOfCharsUsed((char *) GeneralBuffers.SamplePrint, false) * 7) + 1, 11, 0);
+						CursorMoved = false;
+					}
+					else //Draw rectangle
+						SSD1306_DrawRectangle(XOffset - 2, ResY - 3, (NumberOfCharsUsed((char *) GeneralBuffers.ResolutionPrint, false) * 7) + 3, 13, 1);
+				break;
+				case SampleTime:
+					if(CursorMoved)
+					{
+						switch(IDR_Read)
+						{
+							case Up:
+								//Erase Graphic
+								SSD1306_DrawRectangle(XOffset - 2, GraphicY - 1, (NumberOfCharsUsed((char *) GeneralBuffers.GraphicPrint, false) * 7) + 1, 11, 0);
+							break;
+							case Down:
+								//Erase Resolution
+								SSD1306_DrawRectangle(XOffset - 2, ResY - 3, (NumberOfCharsUsed((char *) GeneralBuffers.ResolutionPrint, false) * 7) + 3, 13, 0);
+							break;
+						}
+						CursorMoved = false;
+					}
+
+					else //Draw rectangle
+						SSD1306_DrawRectangle(XOffset - 2, SampleY - 1, (NumberOfCharsUsed((char *) GeneralBuffers.SamplePrint, false) * 7) + 1, 11, 1);
+				break;
+				case Graphic:
+					if(CursorMoved)
+					{
+						//Erase Sample
+						SSD1306_DrawRectangle(XOffset - 2, SampleY - 1, (NumberOfCharsUsed((char *) GeneralBuffers.SamplePrint, false) * 7) + 1, 11, 0);
+						CursorMoved = false;
+					}
+
+					else //Draw rectangle
+						SSD1306_DrawRectangle(XOffset - 2, GraphicY - 1, (NumberOfCharsUsed((char *) GeneralBuffers.GraphicPrint, false) * 7) + 1, 11, 1);
+				break;
+				default:
+				break;
+			}
+			SSD1306_UpdateScreen();
+		break;
+		case Resolution:
+		break;
+		case SampleTime:
+		break;
+		case Graphic:
+		break;
+		default:
+		break;
+	}
+	Configs.Last_Mode = Config_Plot;
+	comeFromMenu = false;
+
+
+
+
+}
+
+//Configuration plot functions
+void Config_PlotCursorAnim(char *string, FontDef_t Font, uint16_t CoordinateX, uint16_t CoordinateY)
+{
+	uint16_t CharsPixels = NumberOfCharsUsed(string, false) * Font.FontWidth;
+
+	SSD1306_DrawRectangle(CoordinateX, CoordinateY, CharsPixels + 2, Font.FontHeight + 2, 1);
+	Timer_Delay_250ms(1);
+	HAL_IWDG_Refresh(&hiwdg);
+	SSD1306_GotoXY(CoordinateX, CoordinateY);
+	SSD1306_Puts(string, &Font, 1);
+	SSD1306_UpdateScreen();
+
+}
+void Config_PlotSelectAnim(char *string);
+
+
+void DrawSampleRect(bool Draw);
+void DrawGraphicRect(bool Draw);
 //Configuration plot functions
 
 //@TODO check error reset sensor mode
@@ -790,6 +1035,15 @@ void SensorRead(void)
 	}
 }
 
+uint16_t CenterXPrint(char *string, uint16_t InitialCoordinate, uint16_t LastCoordinate, FontDef_t Font)
+{
+	uint16_t Chars = NumberOfCharsUsed(string, 0);
+
+	Chars *= Font.FontWidth;
+
+	return (((LastCoordinate - Chars) + InitialCoordinate) / 2);
+}
+
 uint16_t CharsNumberFromInt(uint32_t Number, uint16_t CountStringFinisher)
 {
     uint16_t NumberOfChars = 0;
@@ -836,7 +1090,7 @@ void CharNumberFromFloat(float Number, uint16_t DecimalsToConsider, uint16_t Cou
 
 uint16_t NumberOfCharsUsed(char *String, uint16_t CountStringFinisher)
 {
-    uint16_t NumChars;
+    uint16_t NumChars = 0;
     while(*String != 0)
     {
         NumChars++;
