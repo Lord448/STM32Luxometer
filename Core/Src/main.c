@@ -1,5 +1,5 @@
 /**
- * 	Paused Cycle Scheme, cooperative tasks
+ * 	Parsed Loop Scheme, cooperative tasks
  * 	Error Codes
  * 	0x0000:
  *  EEPROM Memory Map
@@ -11,7 +11,8 @@
  *	0x0001: Variable Mode : 8 bits
  *	0x0002: Variable Resolutions : 8 bits
  *
- *	Version 0.0.3
+ *	Version 0.3
+ *	Version E.3
  *	Watchdog timer in 400ms
  */
 
@@ -26,16 +27,25 @@
 #define EEPROM_ADDR 0b10100000
 #define ReadMask (uint32_t) 0x1F
 #define EndOfCounts250ms 65454 //@274PSC: 250ms
+#define EndOfCounts50ms 13139  //@274PS: 50ms
 #define SizeOfSlotsArray 5
 #define Seconds(x) x*4 //Only valid for the Timer_Delay_250ms
 #define DefaultSampleTime 10
 #define DefaultResolution 54612
 
 //#define USER_PLOT_DEBUG
-#define USER_CONF_P_DEBUG
+//#define USER_CONF_P_DEBUG
+//#define SHOW_LOADING //On the initial boot
+
 #define ONE_SENSOR
 #define USER_DEBUG
-#define SHOW_LOADING
+#define ECONOMIC_VERSION //For the versions of the instrument that doesn't have the EEPROM
+
+#ifdef ECONOMIC_VERSION
+#define VERSION "Version E.3"
+#else
+#define VERSION "Version 0.3"
+#endif
 
 I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c2;
@@ -138,7 +148,7 @@ void SSD1306_DrawFilledTriangle(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t 
 void Print_OkToContinue(uint16_t XOffset, uint16_t YLimit);
 
 void Config_plot_mode(void);
-void Config_PlotSelectAnim(char *string);
+void Config_PlotSelectAnim(char *string, uint16_t CoordinateX, uint16_t CoordinateY);
 
 void Reset_sensor_mode(void);
 void Flash_configs(void);
@@ -151,6 +161,7 @@ void Select_animation(char String[], uint16_t x, uint16_t y);
 void Print_Measure(float Measure, uint16_t x, uint16_t y);
 void wait_until_press(Buttons Button);
 void Timer_Delay_250ms(uint16_t Value);
+void Timer_Delay_50ms(uint16_t Value);
 void Timer_Delay_at_274PSC(uint16_t Counts, uint16_t Overflows); //Period of 0.000003806
 void SensorRead(void);
 void Errors_init();
@@ -181,7 +192,7 @@ PlotConfigs GlobalConfigs  = {
 const char Slots[5][7] = {"Slot 1", "Slot 2", "Slot 3", "Slot 5", "Slot 6"};
 float Measure;
 Rojo_BH1750 BH1750;
-uint32_t IDR_Read;
+uint16_t IDR_Read;
 uint8_t Config_buffer[2]; /*Solve here*/
 bool comeFromMenu = false;
 
@@ -210,8 +221,11 @@ int main(void)
 #endif
 
   ISR = None;
+  //Version declaration
+  SSD1306_GotoXY(7, 20);
+  SSD1306_Puts("Firmware Version", &Font_7x10, 1);
   SSD1306_GotoXY(3, 37);
-  SSD1306_Puts("Version 0.3", &Font_11x18, 1);
+  SSD1306_Puts(VERSION, &Font_11x18, 1);
   SSD1306_UpdateScreen();
   HAL_IWDG_Refresh(&hiwdg);
   switch(Sensor)
@@ -224,6 +238,7 @@ int main(void)
 	  break;
   }
   //EEPROM Check & Configurations Read
+#ifndef ECONOMIC_VERSION
   if(HAL_I2C_Mem_Read(&hi2c1, EEPROM_ADDR, 0x0, 1, &Configs.Factory_Values, 1, 100) != HAL_OK)
 	  Fatal_Error_EEPROM();
   if(Errors.EEPROM_Fatal || Configs.Factory_Values)
@@ -238,9 +253,11 @@ int main(void)
 	  Config_buffer[0] = Configs.Mode;
 	  Config_buffer[1] = Configs.Resolution;
   }
+#endif
   //Final
   HAL_IWDG_Refresh(&hiwdg);
   HAL_TIM_Base_Start(&htim4);
+  Timer_Delay_250ms(Seconds(0.5f));
 #ifndef SHOW_LOADING
   Timer_Delay_250ms(Seconds(1.5f));
 #endif
@@ -297,7 +314,7 @@ int main(void)
 	  	  break;
 	  }
 	  HAL_IWDG_Refresh(&hiwdg);
-	  //Paused Cycle
+	  //Parsed Loop
 #ifdef USER_DEBUG
 	  while(PauseFlag)
 		  HAL_IWDG_Refresh(&hiwdg);
@@ -481,11 +498,9 @@ void Print_OkToContinue(uint16_t XOffset, uint16_t YLimit)
 	SSD1306_UpdateScreen();
 }
 
-//@TODO Printing the rectangle menu, all the other stages
+//@TODO Solve cursor bugs, all the other stages
 void Config_plot_mode(void)
 {
-
-
 	typedef enum ConfigStage
 	{
 		none,
@@ -526,15 +541,9 @@ void Config_plot_mode(void)
 	static ConfigStage Cursor = Resolution;
 	static bool EnteredGraphic = false;
 	static bool CursorMoved = false;
+	uint32_t Past_IDR_Read = 0xFF;
 	bool ReprintInitialPrint = false;
-
-	void DrawResRect(bool Draw)
-	{
-		if(Draw)
-			SSD1306_DrawRectangle(XOffset - 2, ResY - 3, (NumberOfCharsUsed((char *) GeneralBuffers.ResolutionPrint, false) * 7) + 3, 13, 1);
-		else
-			SSD1306_DrawRectangle(XOffset - 2, ResY - 3, (NumberOfCharsUsed((char *) GeneralBuffers.ResolutionPrint, false) * 7) + 3, 13, 0);
-	}
+	bool NotReady = true;
 
 	HAL_IWDG_Refresh(&hiwdg);
 	if(Configs.Last_Mode != Config_Plot || comeFromMenu || ReprintInitialPrint)
@@ -589,91 +598,118 @@ void Config_plot_mode(void)
 		SSD1306_GotoXY(XOffset + (NumberOfCharsUsed((char *) GeneralBuffers.SamplePrint, false) * 7) + 5, 25);
 		SSD1306_Puts(GeneralBuffers.SampleBuffer, &Font_7x10, 1);
 		SSD1306_UpdateScreen();
-		free(GeneralBuffers.ResBuffer);
-		free(GeneralBuffers.SampleBuffer);
 	}
 	//Start the configuration
 	HAL_IWDG_Refresh(&hiwdg);
 	switch(CurrentStage)
 	{
 		case Selecting:
-			HAL_IWDG_Refresh(&hiwdg);
-			IDR_Read = (GPIOA -> IDR & ReadMask);
-			switch(IDR_Read)
+			do
 			{
-				case Up:
-					Cursor--;
-					if(Cursor > Resolution)
-						Cursor = Resolution;
-					else
-						CursorMoved = true;
-				break;
-				case Down:
-					Cursor++;
-					if(Cursor < Graphic)
-						Cursor = Graphic;
-					else
-						CursorMoved = true;
-				break;
-				case Ok:
-						CurrentStage = Cursor;
-						if(Cursor == Graphic)
-							EnteredGraphic = true;
-						//@TODO Select animation
-				break;
-				default:
-				break;
-			}
-			//Printing cursor
-			switch(Cursor)
-			{
-				case Resolution:
-					if(CursorMoved)
+				HAL_IWDG_Refresh(&hiwdg);
+				IDR_Read = (GPIOA -> IDR & ReadMask);
+				if(Past_IDR_Read != IDR_Read)
+				{
+					switch(IDR_Read)
 					{
-						//Erase Sample Rectangle
-						SSD1306_DrawRectangle(XOffset - 2, SampleY - 1, (NumberOfCharsUsed((char *) GeneralBuffers.SamplePrint, false) * 7) + 1, 11, 0);
-						CursorMoved = false;
-					}
-					else //Draw rectangle
-						SSD1306_DrawRectangle(XOffset - 2, ResY - 3, (NumberOfCharsUsed((char *) GeneralBuffers.ResolutionPrint, false) * 7) + 3, 13, 1);
-				break;
-				case SampleTime:
-					if(CursorMoved)
-					{
-						switch(IDR_Read)
-						{
-							case Up:
-								//Erase Graphic
-								SSD1306_DrawRectangle(XOffset - 2, GraphicY - 1, (NumberOfCharsUsed((char *) GeneralBuffers.GraphicPrint, false) * 7) + 1, 11, 0);
-							break;
-							case Down:
-								//Erase Resolution
-								SSD1306_DrawRectangle(XOffset - 2, ResY - 3, (NumberOfCharsUsed((char *) GeneralBuffers.ResolutionPrint, false) * 7) + 3, 13, 0);
-							break;
-						}
-						CursorMoved = false;
-					}
+						case Up:
+							Cursor--;
+							if(Cursor < Resolution)
+								Cursor = Resolution;
+							else
+								CursorMoved = true;
+						break;
+						case Down:
+							Cursor++;
+							if(Cursor > Graphic)
+								Cursor = Graphic;
+							else
+								CursorMoved = true;
+						break;
+						case Ok:
+							CurrentStage = Cursor;
+							if(Cursor == Graphic)
+								EnteredGraphic = true;
+							NotReady = false;
+							if(Cursor == Graphic)
+							{
+							}
+								//@TODO Select animation
+						break;
+						case Right:
+							CurrentStage = Cursor;
+							if(Cursor == Graphic)
+								EnteredGraphic = true;
+							NotReady = false;
+							if(Cursor == Graphic)
+							{
 
-					else //Draw rectangle
-						SSD1306_DrawRectangle(XOffset - 2, SampleY - 1, (NumberOfCharsUsed((char *) GeneralBuffers.SamplePrint, false) * 7) + 1, 11, 1);
-				break;
-				case Graphic:
-					if(CursorMoved)
-					{
-						//Erase Sample
-						SSD1306_DrawRectangle(XOffset - 2, SampleY - 1, (NumberOfCharsUsed((char *) GeneralBuffers.SamplePrint, false) * 7) + 1, 11, 0);
-						CursorMoved = false;
+							}
+						break;
+						default:
+						break;
 					}
+					//Printing cursor
+					switch(Cursor)
+					{
+						case Resolution:
+							if(CursorMoved)
+							{
+								//Erase Sample Rectangle
+								SSD1306_DrawRectangle(XOffset - 2, SampleY - 1, (NumberOfCharsUsed((char *) GeneralBuffers.SamplePrint, false) * 7) + 1, 11, 0);
+								CursorMoved = false;
+							}
+							else //Draw rectangle
+								SSD1306_DrawRectangle(XOffset - 2, ResY - 3, (NumberOfCharsUsed((char *) GeneralBuffers.ResolutionPrint, false) * 7) + 3, 13, 1);
+						break;
+						case SampleTime:
+							if(CursorMoved)
+							{
+								switch(IDR_Read)
+								{
+									case Up:
+										//Erase Graphic
+										SSD1306_DrawRectangle(XOffset - 2, GraphicY - 1, (NumberOfCharsUsed((char *) GeneralBuffers.GraphicPrint, false) * 7) + 1, 11, 0);
+									break;
+									case Down:
+										//Erase Resolution
+										SSD1306_DrawRectangle(XOffset - 2, ResY - 3, (NumberOfCharsUsed((char *) GeneralBuffers.ResolutionPrint, false) * 7) + 3, 13, 0);
+									break;
+								}
+								CursorMoved = false;
+							}
 
-					else //Draw rectangle
-						SSD1306_DrawRectangle(XOffset - 2, GraphicY - 1, (NumberOfCharsUsed((char *) GeneralBuffers.GraphicPrint, false) * 7) + 1, 11, 1);
-				break;
-				default:
-				break;
-			}
-			SSD1306_UpdateScreen();
+							else //Draw rectangle
+								SSD1306_DrawRectangle(XOffset - 2, SampleY - 1, (NumberOfCharsUsed((char *) GeneralBuffers.SamplePrint, false) * 7) + 1, 11, 1);
+						break;
+						case Graphic:
+							if(CursorMoved)
+							{
+								//Erase Sample
+								SSD1306_DrawRectangle(XOffset - 2, SampleY - 1, (NumberOfCharsUsed((char *) GeneralBuffers.SamplePrint, false) * 7) + 1, 11, 0);
+								CursorMoved = false;
+							}
+
+							else //Draw rectangle
+								SSD1306_DrawRectangle(XOffset - 2, GraphicY - 1, (NumberOfCharsUsed((char *) GeneralBuffers.GraphicPrint, false) * 7) + 1, 11, 1);
+						break;
+						default:
+						break;
+					}
+					SSD1306_UpdateScreen();
+					Timer_Delay_50ms(1);
+				}
+				else
+					HAL_IWDG_Refresh(&hiwdg);
+				Past_IDR_Read = IDR_Read;
+			}while(NotReady && ISR == None);
 		break;
 		case Resolution:
+			//Erase Resolution
+			SSD1306_DrawRectangle(XOffset - 2, ResY - 3, (NumberOfCharsUsed((char *) GeneralBuffers.ResolutionPrint, false) * 7) + 3, 13, 0);
+			//Draw cursor on the number
+			SSD1306_DrawRectangle(XOffset + (NumberOfCharsUsed((char *) GeneralBuffers.ResolutionPrint, false) * 7) - 2, ResY - 3, (NumberOfCharsUsed((char *) GeneralBuffers.ResBuffer, false) * 7) + 3, 13, 1);
+			SSD1306_UpdateScreen();
 		break;
 		case SampleTime:
 		break;
@@ -684,30 +720,18 @@ void Config_plot_mode(void)
 	}
 	Configs.Last_Mode = Config_Plot;
 	comeFromMenu = false;
-
-
-
-
+	if(ISR == Menu)
+	{
+		free(GeneralBuffers.ResBuffer);
+		free(GeneralBuffers.SampleBuffer);
+	}
 }
 
 //Configuration plot functions
-void Config_PlotCursorAnim(char *string, FontDef_t Font, uint16_t CoordinateX, uint16_t CoordinateY)
+void Config_PlotSelectAnim(char *string, uint16_t CoordinateX, uint16_t CoordinateY)
 {
-	uint16_t CharsPixels = NumberOfCharsUsed(string, false) * Font.FontWidth;
-
-	SSD1306_DrawRectangle(CoordinateX, CoordinateY, CharsPixels + 2, Font.FontHeight + 2, 1);
-	Timer_Delay_250ms(1);
-	HAL_IWDG_Refresh(&hiwdg);
-	SSD1306_GotoXY(CoordinateX, CoordinateY);
-	SSD1306_Puts(string, &Font, 1);
-	SSD1306_UpdateScreen();
 
 }
-void Config_PlotSelectAnim(char *string);
-
-
-void DrawSampleRect(bool Draw);
-void DrawGraphicRect(bool Draw);
 //Configuration plot functions
 
 //@TODO check error reset sensor mode
@@ -735,6 +759,8 @@ void Reset_sensor_mode(void)
 	SSD1306_Puts("to continue", &Font_7x10, 1);
 	SSD1306_UpdateScreen();
 	wait_until_press(Ok);
+	if(Configs.Last_Mode == Reset_Sensor)
+		Configs.Last_Mode = Continuous;
 	Configs.Mode = Configs.Last_Mode;
 	Configs.Last_Mode = Reset_Sensor;
 }
@@ -780,6 +806,7 @@ void MenuGUI(void)
 					SSD1306_GotoXY(41, 37);
 					SSD1306_Puts("Hold", &Font_11x18, 1);
 				break;
+#ifndef ECONOMIC_VERSION //Disabling the complete version modes
 				case Plot:
 					SSD1306_GotoXY(3, 37);
 					SSD1306_Puts("             ", &Font_11x18, 1);
@@ -798,6 +825,7 @@ void MenuGUI(void)
 					SSD1306_GotoXY(9, 37);
 					SSD1306_Puts("Sel Sensor", &Font_11x18, 1);
 				break;
+#endif
 				case Reset_Sensor:
 					SSD1306_GotoXY(3, 37);
 					SSD1306_Puts("             ", &Font_11x18, 1);
@@ -814,11 +842,19 @@ void MenuGUI(void)
 			{
 				case Right:
 					Mode_Displayed++;
+#ifdef ECONOMIC_VERSION //Disabling the complete version modes
+					if(Mode_Displayed == Plot)
+						Mode_Displayed = Reset_Sensor;
+#endif
 					if(Mode_Displayed > Reset_Sensor)
 						Mode_Displayed = Continuous;
 				break;
 				case Left:
 					Mode_Displayed--;
+#ifdef ECONOMIC_VERSION //Disabling the complete version modes
+					if(Mode_Displayed >= Select_Sensor)
+						Mode_Displayed = Hold;
+#endif
 					if(Mode_Displayed < Continuous)
 						Mode_Displayed = Reset_Sensor;
 				break;
@@ -837,6 +873,7 @@ void MenuGUI(void)
 							case Hold:
 								Select_animation("Hold       ", 41, 37);
 							break;
+#ifndef ECONOMIC_VERSION //Disabling the complete version modes
 							case Plot:
 								Select_animation("Plot       ", 41, 37);
 							break;
@@ -846,6 +883,7 @@ void MenuGUI(void)
 							case Select_Sensor:
 								Select_animation("Sel Sensor ", 9, 37);
 							break;
+#endif
 							case Reset_Sensor:
 								Select_animation("Reset Sense", 3, 37);
 							break;
@@ -860,7 +898,8 @@ void MenuGUI(void)
 		else
 			HAL_IWDG_Refresh(&hiwdg);
 		Past_IDR_Read = IDR_Read;
-	}while(Not_Filled && ISR == None);
+	}while(Not_Filled && ISR != MCU_Reset);
+	ISR = None;
 }
 
 //@TODO Code a fancy animation
@@ -873,7 +912,7 @@ void Select_animation(char String[], uint16_t x, uint16_t y)
 	SSD1306_Puts(String, &Font_11x18, 1);
 	SSD1306_UpdateScreen();
 	//Timer_Delay_250ms(1);
-	Timer_Delay_at_274PSC(30000, 1);
+	Timer_Delay_at_274PSC(30000, 1); //114.18ms
 	SSD1306_GotoXY(3, 37);
 	SSD1306_Puts("            ", &Font_11x18, 1);
 	SSD1306_UpdateScreen();
@@ -886,6 +925,7 @@ void Select_animation(char String[], uint16_t x, uint16_t y)
 }
 
 //Error handlers
+#ifndef ECONOMIC_VERSION
 void Fatal_Error_EEPROM(void)
 {
 	if(!Errors.EEPROM_Fatal)
@@ -902,6 +942,7 @@ void Fatal_Error_EEPROM(void)
 		HAL_IWDG_Refresh(&hiwdg);
 	}
 }
+#endif
 
 void Fatal_Error_BH1750(void)
 {
@@ -991,6 +1032,11 @@ void Errors_init()
 void Timer_Delay_250ms(uint16_t Value)
 {
 	Timer_Delay_at_274PSC(EndOfCounts250ms, Value);
+}
+
+void Timer_Delay_50ms(uint16_t Value)
+{
+	Timer_Delay_at_274PSC(EndOfCounts50ms, Value);
 }
 
 void Timer_Delay_at_274PSC(uint16_t Counts, uint16_t Overflows) //Period of 0.000003806

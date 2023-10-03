@@ -1,0 +1,11 @@
+Rojo_BH1750.c:27:20:ResetCommand	2
+Rojo_BH1750.c:42:20:PowerOnCommand	2
+Rojo_BH1750.c:57:20:PowerDownCommand	2
+Rojo_BH1750.c:73:17:Measure_Subrutine	7
+Rojo_BH1750.c:103:13:BH1750_Init	3
+Rojo_BH1750.c:119:13:BH1750_Read	6
+Rojo_BH1750.c:145:13:BH1750_ReCalibrate	6
+Rojo_BH1750.c:166:13:BH1750_Command	4
+Rojo_BH1750.c:179:13:BH1750_Sleep	3
+Rojo_BH1750.c:189:13:BH1750_SetResolution	5
+Rojo_BH1750.c:211:6:Prepare_to_print	3
