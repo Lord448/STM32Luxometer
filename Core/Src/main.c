@@ -12,7 +12,8 @@
  *	0x0002: Variable Resolutions : 8 bits
  *
  *	Version 0.3
- *	Version E.3
+ *	Version E.3d
+ *	This version adds a DAC handle on the A Port
  *	Watchdog timer in 400ms
  */
 
@@ -1070,11 +1071,29 @@ void MCU_Reset_Subrutine(void)
 
 void SensorRead(void)
 {
+	const uint32_t A6toA13andA15Mask = 0xFFFF603F; //For masking the port
+	const uint32_t DAC_MSBMask = 0x8000; //To get the MSB on the 13 position
+
+	uint32_t DACVal = 0, DACPort = 0, DAC_MSB = 0;
+	uint32_t tmp = 0;
 	switch(Sensor)
 	{
 		case _BH1750:
 			if(BH1750_Read(&BH1750, &Measure) != Rojo_OK) //Saving the value into a global
 				NoConnected_BH1750();
+			//Writing the DAC
+			else
+			{
+				//Scaling the DAC value
+				DACVal = (uint8_t) (Measure *0xFF)/(0xFFFF/1.2);
+				//Preparing variable for the port format
+				DAC_MSB = (DACVal<<6)&DAC_MSBMask; //Getting the MSB bit
+				DAC_MSB <<= 2; //Moving to the 15 position
+				DACPort = DAC_MSB | (DACVal<<6); //Building the variable
+				//Writing the port
+				tmp = (GPIOA -> ODR & A6toA13andA15Mask);
+				GPIOA -> ODR = tmp | DACPort;
+			}
 		break;
 		case _TSL2561:
 		break;
@@ -1446,6 +1465,8 @@ static void MX_TIM4_Init(void)
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
+/* USER CODE BEGIN MX_GPIO_Init_1 */
+/* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
@@ -1456,6 +1477,10 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, A0_Pin|A1_Pin|A2_Pin|A4_Pin
+                          |A5_Pin|A6_Pin|A7_Pin, GPIO_PIN_RESET);
+
   /*Configure GPIO pin : PC13 */
   GPIO_InitStruct.Pin = GPIO_PIN_13;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -1464,11 +1489,20 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pins : Arriba_Pin Abajo_Pin Derecha_Pin Izquierda_Pin
-                           Ok_Pin WP_Pin */
+                           Ok_Pin WP_Pin A3_Pin */
   GPIO_InitStruct.Pin = Arriba_Pin|Abajo_Pin|Derecha_Pin|Izquierda_Pin
-                          |Ok_Pin|WP_Pin;
+                          |Ok_Pin|WP_Pin|A3_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : A0_Pin A1_Pin A2_Pin A4_Pin
+                           A5_Pin A6_Pin A7_Pin */
+  GPIO_InitStruct.Pin = A0_Pin|A1_Pin|A2_Pin|A4_Pin
+                          |A5_Pin|A6_Pin|A7_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : Menu_IT_Pin Reset_IT_Pin */
@@ -1484,6 +1518,8 @@ static void MX_GPIO_Init(void)
   HAL_NVIC_SetPriority(EXTI1_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI1_IRQn);
 
+/* USER CODE BEGIN MX_GPIO_Init_2 */
+/* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */

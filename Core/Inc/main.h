@@ -69,12 +69,28 @@ void Error_Handler(void);
 #define Ok_GPIO_Port GPIOA
 #define WP_Pin GPIO_PIN_5
 #define WP_GPIO_Port GPIOA
+#define A0_Pin GPIO_PIN_6
+#define A0_GPIO_Port GPIOA
+#define A1_Pin GPIO_PIN_7
+#define A1_GPIO_Port GPIOA
 #define Menu_IT_Pin GPIO_PIN_0
 #define Menu_IT_GPIO_Port GPIOB
 #define Menu_IT_EXTI_IRQn EXTI0_IRQn
 #define Reset_IT_Pin GPIO_PIN_1
 #define Reset_IT_GPIO_Port GPIOB
 #define Reset_IT_EXTI_IRQn EXTI1_IRQn
+#define A2_Pin GPIO_PIN_8
+#define A2_GPIO_Port GPIOA
+#define A3_Pin GPIO_PIN_9
+#define A3_GPIO_Port GPIOA
+#define A4_Pin GPIO_PIN_10
+#define A4_GPIO_Port GPIOA
+#define A5_Pin GPIO_PIN_11
+#define A5_GPIO_Port GPIOA
+#define A6_Pin GPIO_PIN_12
+#define A6_GPIO_Port GPIOA
+#define A7_Pin GPIO_PIN_15
+#define A7_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
 
