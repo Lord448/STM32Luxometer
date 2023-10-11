@@ -89,8 +89,8 @@ void Error_Handler(void);
 #define A5_GPIO_Port GPIOA
 #define A6_Pin GPIO_PIN_12
 #define A6_GPIO_Port GPIOA
-#define A7_Pin GPIO_PIN_15
-#define A7_GPIO_Port GPIOA
+#define A7_Pin GPIO_PIN_3
+#define A7_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
