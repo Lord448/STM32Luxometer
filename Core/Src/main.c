@@ -192,6 +192,7 @@ PlotConfigs GlobalConfigs  = {
 const char Slots[5][7] = {"Slot 1", "Slot 2", "Slot 3", "Slot 5", "Slot 6"};
 float Measure;
 Rojo_BH1750 BH1750;
+Rojo_BH1750 Sensor2;
 uint16_t IDR_Read;
 uint8_t Config_buffer[2]; /*Solve here*/
 bool comeFromMenu = false;
@@ -234,6 +235,8 @@ int main(void)
   {
   	  case _BH1750:
   		  if(BH1750_Init(&BH1750, &hi2c2, Address_Low) != Rojo_OK)
+  			  NoConnected_BH1750();
+  		  if(BH1750_Init(&Sensor2, &hi2c2, Address_High) != Rojo_OK)
   			  NoConnected_BH1750();
 	  break;
 	  case _TSL2561:
@@ -969,12 +972,14 @@ void NoConnected_BH1750(void)
 	if(!Errors.BH1750_NoConn)
 	{
 		SSD1306_Clear();
-		SSD1306_GotoXY(3, 18);
+		SSD1306_GotoXY(42, 10);
 		SSD1306_Puts("BH1750", &Font_7x10, 1);
-		SSD1306_GotoXY(3, 18);
+		SSD1306_GotoXY(21, 21);
 		SSD1306_Puts("No Connected", &Font_7x10, 1);
-		SSD1306_GotoXY(6, 33);
-		SSD1306_Puts("Press OK to continue", &Font_7x10, 1);
+		SSD1306_GotoXY(35, 36);
+		SSD1306_Puts("Press OK", &Font_7x10, 1);
+		SSD1306_GotoXY(25, 47);
+		SSD1306_Puts("to continue", &Font_7x10, 1);
 		SSD1306_UpdateScreen();
 		//ISR = None;
 		HAL_IWDG_Refresh(&hiwdg);
