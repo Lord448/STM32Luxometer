@@ -11,8 +11,8 @@
  *	0x0001: Variable Mode : 8 bits
  *	0x0002: Variable Resolutions : 8 bits
  *
- *	Version 0.3
- *	Version E.3
+ *	Version 0.3.1
+ *	Version E.3.1
  *	Watchdog timer in 400ms
  */
 
@@ -950,9 +950,10 @@ void Fatal_Error_BH1750(void)
 	{
 		SSD1306_Clear();
 		SSD1306_GotoXY(3, 18);
-		SSD1306_Puts("Fatal Error: BH1750", &Font_7x10, 1);
+		SSD1306_Puts("Fatal Error: EEPROM", &Font_7x10, 1);
 		SSD1306_GotoXY(6, 33);
 		SSD1306_Puts("Press OK to continue", &Font_7x10, 1);
+		SSD1306_UpdateScreen();
 		SSD1306_UpdateScreen();
 		HAL_IWDG_Refresh(&hiwdg);
 		wait_until_press(Ok);
@@ -967,12 +968,14 @@ void NoConnected_BH1750(void)
 	if(!Errors.BH1750_NoConn)
 	{
 		SSD1306_Clear();
-		SSD1306_GotoXY(3, 18);
+		SSD1306_GotoXY(42, 10);
 		SSD1306_Puts("BH1750", &Font_7x10, 1);
-		SSD1306_GotoXY(3, 18);
+		SSD1306_GotoXY(21, 21);
 		SSD1306_Puts("No Connected", &Font_7x10, 1);
-		SSD1306_GotoXY(6, 33);
-		SSD1306_Puts("Press OK to continue", &Font_7x10, 1);
+		SSD1306_GotoXY(35, 36);
+		SSD1306_Puts("Press OK", &Font_7x10, 1);
+		SSD1306_GotoXY(25, 47);
+		SSD1306_Puts("to continue", &Font_7x10, 1);
 		SSD1306_UpdateScreen();
 		//ISR = None;
 		HAL_IWDG_Refresh(&hiwdg);
