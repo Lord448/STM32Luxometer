@@ -949,10 +949,14 @@ void Fatal_Error_BH1750(void)
 	if(!Errors.BH1750_Fatal)
 	{
 		SSD1306_Clear();
-		SSD1306_GotoXY(3, 18);
-		SSD1306_Puts("Fatal Error: BH1750", &Font_7x10, 1);
-		SSD1306_GotoXY(6, 33);
-		SSD1306_Puts("Press OK to continue", &Font_7x10, 1);
+		SSD1306_GotoXY(42, 10);
+		SSD1306_Puts("BH1750", &Font_7x10, 1);
+		SSD1306_GotoXY(21, 21);
+		SSD1306_Puts("No Connected", &Font_7x10, 1);
+		SSD1306_GotoXY(35, 36);
+		SSD1306_Puts("Press OK", &Font_7x10, 1);
+		SSD1306_GotoXY(25, 47);
+		SSD1306_Puts("to continue", &Font_7x10, 1);
 		SSD1306_UpdateScreen();
 		HAL_IWDG_Refresh(&hiwdg);
 		wait_until_press(Ok);
