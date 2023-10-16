@@ -1,18 +1,10 @@
 /**
  * 	Parsed Loop Scheme, cooperative tasks
- * 	Error Codes
- * 	0x0000:
- *  EEPROM Memory Map
- *  Memory regions
- *  0x0000 - 0x0002 Menu Configurations
- *  Variables
- *	//Menu Configurations
- *	0x0000: Variable that contains if the system is in Factory Values : 8 bits
- *	0x0001: Variable Mode : 8 bits
- *	0x0002: Variable Resolutions : 8 bits
  *
- *	Version E.3 DAC
+ *	Version DE.3.1 DAC Double Sensor
  *	This version adds a DAC handle on the A Port
+ *	And another BH1750 Sensor
+ *
  *	Watchdog timer in 400ms
  */
 
@@ -155,8 +147,8 @@ void Flash_configs(void);
 void MenuGUI(void);
 void MCU_Reset_Subrutine(void);
 void Fatal_Error_EEPROM(void);
-void Fatal_Error_BH1750(void);
-void NoConnected_BH1750(void);
+void Fatal_Error_BH1750(uint16_t Sensor);
+void NoConnected_BH1750(uint16_t Sensor);
 void Select_animation(char String[], uint16_t x, uint16_t y);
 void Print_Measure(float Measure, uint16_t x, uint16_t y);
 void wait_until_press(Buttons Button);
@@ -190,7 +182,7 @@ PlotConfigs GlobalConfigs  = {
 };
 
 const char Slots[5][7] = {"Slot 1", "Slot 2", "Slot 3", "Slot 5", "Slot 6"};
-float Measure;
+float Measure, Measure2;
 Rojo_BH1750 BH1750;
 Rojo_BH1750 Sensor2;
 uint16_t IDR_Read;
@@ -223,21 +215,23 @@ int main(void)
 
   ISR = None;
   //Version declaration
-  SSD1306_GotoXY(7, 5);
+  SSD1306_GotoXY(7, 0);
   SSD1306_Puts("Firmware Version", &Font_7x10, 1);
-  SSD1306_GotoXY(3, 19);
+  SSD1306_GotoXY(3, 17);
   SSD1306_Puts(VERSION, &Font_11x18, 1);
-  SSD1306_GotoXY(47, 42);
-  SSD1306_Puts("DAC", &Font_11x18, 1);
+  SSD1306_GotoXY(18, 40);
+  SSD1306_Puts("Double Sensor", &Font_7x10, 1);
+  SSD1306_GotoXY(53, 52);
+  SSD1306_Puts("DAC", &Font_7x10, 1);
   SSD1306_UpdateScreen();
   HAL_IWDG_Refresh(&hiwdg);
   switch(Sensor)
   {
   	  case _BH1750:
   		  if(BH1750_Init(&BH1750, &hi2c2, Address_Low) != Rojo_OK)
-  			  NoConnected_BH1750();
+  			  NoConnected_BH1750(1);
   		  if(BH1750_Init(&Sensor2, &hi2c2, Address_High) != Rojo_OK)
-  			  NoConnected_BH1750();
+  			  NoConnected_BH1750(2);
 	  break;
 	  case _TSL2561:
 	  break;
@@ -335,36 +329,52 @@ int main(void)
 //Basic software modes
 void Continous_mode(void)
 {
+	const uint16_t Measure1Y = 12;
+	const uint16_t Measure2Y = 33;
+	const uint16_t MeasureX = 38;
 	HAL_IWDG_Refresh(&hiwdg);
 	if(Configs.Last_Mode != Continuous || comeFromMenu)
 	{
 		SSD1306_Clear();
-		SSD1306_GotoXY(36, 8);
-		SSD1306_Puts("Valor", &Font_11x18, 1);
+		SSD1306_GotoXY(0, Measure1Y);
+		SSD1306_Puts("S1", &Font_11x18, 1);
+		SSD1306_GotoXY(0, Measure2Y);
+		SSD1306_Puts("S2", &Font_11x18, 1);
+		SSD1306_GotoXY(28, 0);
+		SSD1306_Puts("Valor (lx)", &Font_7x10, 1);
 		SSD1306_GotoXY(28, 53);
 		SSD1306_Puts("Continuous", &Font_7x10, 1);
 		SSD1306_UpdateScreen();
 	}
 	SensorRead();
 	HAL_IWDG_Refresh(&hiwdg);
-	Print_Measure(Measure, 14, 30);
+	Print_Measure(Measure, MeasureX, Measure1Y);
+	Print_Measure(Measure2, MeasureX, Measure2Y);
 	Configs.Last_Mode = Continuous;
 	comeFromMenu = false;
 }
 
 void Hold_mode(void)
 {
+	const uint16_t Measure1Y = 12;
+	const uint16_t Measure2Y = 33;
+	const uint16_t MeasureX = 38;
 	if(Configs.Last_Mode != Hold || comeFromMenu)
 	{
 		SSD1306_Clear();
-		SSD1306_GotoXY(36, 8);
-		SSD1306_Puts("Valor", &Font_11x18, 1);
+		SSD1306_GotoXY(0, Measure1Y);
+		SSD1306_Puts("S1", &Font_11x18, 1);
+		SSD1306_GotoXY(0, Measure2Y);
+		SSD1306_Puts("S2", &Font_11x18, 1);
+		SSD1306_GotoXY(28, 0);
+		SSD1306_Puts("Valor (lx)", &Font_7x10, 1);
 		SSD1306_GotoXY(43, 53);
 		SSD1306_Puts("Hold", &Font_7x10, 1);
 		SSD1306_UpdateScreen();
 	}
 	SensorRead();
-	Print_Measure(Measure, 14, 30);
+	Print_Measure(Measure, MeasureX, Measure1Y);
+	Print_Measure(Measure2, MeasureX, Measure2Y);
 	wait_until_press(Ok);
 	Configs.Last_Mode = Hold;
 	comeFromMenu = false;
@@ -749,7 +759,9 @@ void Reset_sensor_mode(void)
 	{
 		case _BH1750:
 			if(BH1750_ReCalibrate(&BH1750) != Rojo_OK)
-				Fatal_Error_BH1750();
+				Fatal_Error_BH1750(1);
+			if(BH1750_ReCalibrate(&Sensor2) != Rojo_OK)
+				Fatal_Error_BH1750(2);
 		break;
 		case _TSL2561:
 		break;
@@ -949,15 +961,22 @@ void Fatal_Error_EEPROM(void)
 }
 #endif
 
-void Fatal_Error_BH1750(void)
+void Fatal_Error_BH1750(uint16_t Sensor)
 {
 	if(!Errors.BH1750_Fatal)
 	{
 		SSD1306_Clear();
-		SSD1306_GotoXY(3, 18);
-		SSD1306_Puts("Fatal Error: BH1750", &Font_7x10, 1);
-		SSD1306_GotoXY(6, 33);
-		SSD1306_Puts("Press OK to continue", &Font_7x10, 1);
+		SSD1306_GotoXY(3, 10);
+		SSD1306_Puts("Fatal Error:", &Font_7x10, 1);
+		SSD1306_GotoXY(35, 22);
+		if(Sensor == 1)
+			SSD1306_Puts("Sensor 1", &Font_7x10, 1);
+		else if(Sensor == 2)
+			SSD1306_Puts("Sensor 2", &Font_7x10, 1);
+		SSD1306_GotoXY(35, 35);
+		SSD1306_Puts("Press OK", &Font_7x10, 1);
+		SSD1306_GotoXY(25, 47);
+		SSD1306_Puts("to continue", &Font_7x10, 1);
 		SSD1306_UpdateScreen();
 		HAL_IWDG_Refresh(&hiwdg);
 		wait_until_press(Ok);
@@ -966,14 +985,17 @@ void Fatal_Error_BH1750(void)
 	}
 }
 
-//@TODO Bad prints, doesn't wait of the button ok
-void NoConnected_BH1750(void)
+//@TODO Doesn't wait of the button ok
+void NoConnected_BH1750(uint16_t Sensor)
 {
 	if(!Errors.BH1750_NoConn)
 	{
 		SSD1306_Clear();
-		SSD1306_GotoXY(42, 10);
-		SSD1306_Puts("BH1750", &Font_7x10, 1);
+		SSD1306_GotoXY(35, 10);
+		if(Sensor == 1)
+			SSD1306_Puts("Sensor 1", &Font_7x10, 1);
+		else if(Sensor == 2)
+			SSD1306_Puts("Sensor 2", &Font_7x10, 1);
 		SSD1306_GotoXY(21, 21);
 		SSD1306_Puts("No Connected", &Font_7x10, 1);
 		SSD1306_GotoXY(35, 36);
@@ -1011,7 +1033,6 @@ void Print_Measure(float Measure, uint16_t x, uint16_t y)
 	SSD1306_Puts(Integer_part, &Font_11x18, 1);
 	SSD1306_Putc('.', &Font_11x18, 1);
 	SSD1306_Puts(Fraccional_part, &Font_11x18, 1);
-	SSD1306_Puts("lx", &Font_11x18, 1);
 	HAL_IWDG_Refresh(&hiwdg);
 	SSD1306_UpdateScreen();
 }
@@ -1090,7 +1111,7 @@ void SensorRead(void)
 	{
 		case _BH1750:
 			if(BH1750_Read(&BH1750, &Measure) != Rojo_OK) //Saving the value into a global
-				NoConnected_BH1750();
+				NoConnected_BH1750(1);
 			//Writing the DAC
 			else
 			{
@@ -1104,6 +1125,8 @@ void SensorRead(void)
 				tmp = (GPIOA -> ODR & A6toA12Mask);
 				GPIOA -> ODR = tmp | DACPortA;
 			}
+			if(BH1750_Read(&Sensor2, &Measure2) != Rojo_OK)
+				NoConnected_BH1750(2);
 		break;
 		case _TSL2561:
 		break;
